@@ -48,6 +48,16 @@ input, textarea {
 }
 input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 
+select {
+  font: inherit;
+  background: var(--bg-hover);
+  color: var(--text);
+  border: none;
+  border-radius: 18px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
 /* ---------- header ---------- */
 
 header {

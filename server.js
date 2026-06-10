@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { db, UPLOADS_DIR, THUMBS_DIR } = require('./db');
+const transcode = require('./transcode');
 
 const PORT = process.env.PORT || 3000;
 const MAX_VIDEO_BYTES = 1024 * 1024 * 1024; // 1 GB
@@ -134,15 +135,17 @@ app.post('/api/videos', requireAuth,
     const id = crypto.randomBytes(6).toString('base64url');
     const duration = parseFloat(req.body.duration);
     db.prepare(`
-      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, req.user.id, title,
       String(req.body.description || '').trim().slice(0, 5000),
       videoFile.filename,
       thumbFile ? thumbFile.filename : null,
       Number.isFinite(duration) ? duration : null,
+      transcode.available ? 'processing' : 'ready',
     );
+    transcode.enqueue(id);
     res.json({ id });
   });
 
@@ -150,9 +153,14 @@ app.post('/api/videos', requireAuth,
 
 const VIDEO_SELECT = `
   SELECT v.id, v.title, v.description, v.filename, v.thumbnail, v.duration,
-         v.views, v.created_at, u.id AS channel_id, u.username AS channel_name
+         v.views, v.created_at, v.status, u.id AS channel_id, u.username AS channel_name
   FROM videos v JOIN users u ON u.id = v.user_id
 `;
+
+function getRenditions(videoId) {
+  return db.prepare('SELECT height, filename FROM renditions WHERE video_id = ? ORDER BY height DESC')
+    .all(videoId);
+}
 
 app.get('/api/videos', (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -195,17 +203,28 @@ app.get('/api/videos/:id', (req, res) => {
     : false;
   video.is_owner = !!me && me.id === video.channel_id;
 
+  video.renditions = getRenditions(video.id);
   video.related = db.prepare(`${VIDEO_SELECT} WHERE v.id != ? ORDER BY v.views DESC, v.created_at DESC LIMIT 12`)
     .all(video.id);
   res.json(video);
+});
+
+// Polled by the watch page while a video is processing; unlike the detail
+// endpoint this does not count a view.
+app.get('/api/videos/:id/status', (req, res) => {
+  const video = db.prepare('SELECT id, status, duration FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found.' });
+  res.json({ status: video.status, duration: video.duration, renditions: getRenditions(video.id) });
 });
 
 app.delete('/api/videos/:id', requireAuth, (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   if (video.user_id !== req.user.id) return res.status(403).json({ error: 'You can only delete your own videos.' });
+  const renditions = getRenditions(video.id);
   db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
   fs.unlink(path.join(UPLOADS_DIR, video.filename), () => {});
+  for (const r of renditions) fs.unlink(path.join(UPLOADS_DIR, r.filename), () => {});
   if (video.thumbnail) fs.unlink(path.join(THUMBS_DIR, video.thumbnail), () => {});
   res.json({ ok: true });
 });
@@ -312,4 +331,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`⚓ Anchor is running at http://localhost:${PORT}`);
+  console.log(transcode.available
+    ? 'Transcoding: ffmpeg found — uploads will get multi-quality renditions.'
+    : 'Transcoding: ffmpeg not found — videos will play in their original format only.');
 });

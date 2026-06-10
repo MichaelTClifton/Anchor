@@ -62,9 +62,22 @@ db.exec(`
     PRIMARY KEY (subscriber_id, channel_id)
   );
 
+  CREATE TABLE IF NOT EXISTS renditions (
+    video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    height INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    PRIMARY KEY (video_id, height)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_videos_user ON videos(user_id);
   CREATE INDEX IF NOT EXISTS idx_videos_created ON videos(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id);
 `);
+
+// Migration for databases created before the transcoding pipeline existed.
+const videoColumns = db.prepare('PRAGMA table_info(videos)').all();
+if (!videoColumns.some(c => c.name === 'status')) {
+  db.exec("ALTER TABLE videos ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'");
+}
 
 module.exports = { db, DATA_DIR, UPLOADS_DIR, THUMBS_DIR };

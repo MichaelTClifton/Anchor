@@ -54,6 +54,7 @@
               ${v.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
           </div>
           <div class="actions">
+            <select id="quality" title="Quality" hidden></select>
             <div class="pill-group">
               <button id="like-btn" class="${v.my_like === 1 ? 'active' : ''}">
                 &#128077; <span id="like-count">${formatViews(v.likes)}</span></button>
@@ -64,7 +65,7 @@
           </div>
         </div>
         <div class="description">
-          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}</div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
+          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}<span id="processing-note" ${v.status === 'processing' ? '' : 'hidden'}> &middot; &#9881; preparing more qualities&hellip;</span></div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
         </div>
         <div class="comments">
           <h3 id="comments-heading">Comments</h3>
@@ -75,6 +76,10 @@
 
       document.getElementById('like-btn').onclick = () => sendLike(1);
       document.getElementById('dislike-btn').onclick = () => sendLike(-1);
+
+      document.getElementById('quality').onchange = switchQuality;
+      renderQuality();
+      if (v.status === 'processing') setTimeout(pollStatus, 5000);
 
       const subBtn = document.getElementById('sub-btn');
       if (subBtn) subBtn.onclick = async () => {
@@ -102,6 +107,45 @@
         slot.querySelector('#comment-btn').onclick = postComment;
       } else {
         slot.innerHTML = `<button onclick="openAuthModal('login')">Sign in to comment</button>`;
+      }
+    }
+
+    function renderQuality() {
+      const sel = document.getElementById('quality');
+      if (!video.renditions || !video.renditions.length) return;
+      const current = sel.value;
+      sel.innerHTML = `<option value="${esc(video.filename)}">Original</option>` +
+        video.renditions.map(r =>
+          `<option value="${esc(r.filename)}">${r.height}p</option>`).join('');
+      if ([...sel.options].some(o => o.value === current)) sel.value = current;
+      sel.hidden = false;
+    }
+
+    function switchQuality() {
+      const player = document.querySelector('.player');
+      const time = player.currentTime;
+      const paused = player.paused;
+      player.addEventListener('loadedmetadata', () => {
+        player.currentTime = time;
+        if (!paused) player.play();
+      }, { once: true });
+      player.src = `/media/${document.getElementById('quality').value}`;
+      player.load();
+    }
+
+    async function pollStatus() {
+      let r;
+      try {
+        r = await api(`/api/videos/${encodeURIComponent(videoId)}/status`);
+      } catch (err) {
+        return; // video was deleted mid-watch; nothing to update
+      }
+      video.renditions = r.renditions;
+      renderQuality();
+      if (r.status === 'processing') {
+        setTimeout(pollStatus, 5000);
+      } else {
+        document.getElementById('processing-note').hidden = true;
       }
     }
 

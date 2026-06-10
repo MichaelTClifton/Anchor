@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div class="watch-layout">
+      <div id="primary"></div>
+      <div class="related" id="related"></div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const videoId = location.pathname.split('/').pop();
+    let video = null;
+
+    document.addEventListener('auth-ready', loadVideo, { once: true });
+
+    async function loadVideo() {
+      try {
+        video = await api(`/api/videos/${encodeURIComponent(videoId)}`);
+      } catch (err) {
+        document.getElementById('primary').innerHTML =
+          `<div class="empty">${esc(err.message)}</div>`;
+        return;
+      }
+      document.title = `${video.title} - Anchor`;
+      renderPrimary();
+      document.getElementById('related').innerHTML =
+        video.related.map(v => videoCard(v, { side: true })).join('') ||
+        '<div class="empty">No other videos yet.</div>';
+      loadComments();
+    }
+
+    function renderPrimary() {
+      const v = video;
+      document.getElementById('primary').innerHTML = `
+        <video class="player" src="/media/${esc(v.filename)}" controls autoplay
+          ${v.thumbnail ? `poster="/thumbs/${esc(v.thumbnail)}"` : ''}></video>
+        <div class="watch-title">${esc(v.title)}</div>
+        <div class="watch-bar">
+          <div class="channel-row">
+            <a class="avatar" href="/channel/${v.channel_id}">${esc(v.channel_name[0].toUpperCase())}</a>
+            <div>
+              <a href="/channel/${v.channel_id}"><b>${esc(v.channel_name)}</b></a>
+              <div class="sub-count" id="sub-count">${subscriberLabel(v.subscribers)}</div>
+            </div>
+            ${v.is_owner ? '' : `<button id="sub-btn" class="${v.subscribed ? 'subscribed' : 'primary'}">
+              ${v.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+          </div>
+          <div class="actions">
+            <div class="pill-group">
+              <button id="like-btn" class="${v.my_like === 1 ? 'active' : ''}">
+                &#128077; <span id="like-count">${formatViews(v.likes)}</span></button>
+              <button id="dislike-btn" class="${v.my_like === -1 ? 'active' : ''}">
+                &#128078; <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
+            </div>
+            ${v.is_owner ? '<button class="danger" id="delete-btn">Delete video</button>' : ''}
+          </div>
+        </div>
+        <div class="description">
+          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}</div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
+        </div>
+        <div class="comments">
+          <h3 id="comments-heading">Comments</h3>
+          <div class="comment-form" id="comment-form-slot"></div>
+          <div id="comment-list"></div>
+        </div>
+      `;
+
+      document.getElementById('like-btn').onclick = () => sendLike(1);
+      document.getElementById('dislike-btn').onclick = () => sendLike(-1);
+
+      const subBtn = document.getElementById('sub-btn');
+      if (subBtn) subBtn.onclick = async () => {
+        if (!ME) return openAuthModal('login');
+        const r = await api(`/api/channels/${v.channel_id}/subscribe`, { method: 'POST' });
+        subBtn.textContent = r.subscribed ? 'Subscribed' : 'Subscribe';
+        subBtn.className = r.subscribed ? 'subscribed' : 'primary';
+        document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
+      };
+
+      const deleteBtn = document.getElementById('delete-btn');
+      if (deleteBtn) deleteBtn.onclick = async () => {
+        if (!confirm('Delete this video permanently?')) return;
+        await api(`/api/videos/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+        location.href = '/';
+      };
+
+      const slot = document.getElementById('comment-form-slot');
+      if (ME) {
+        slot.innerHTML = `
+          <div class="avatar">${esc(ME.username[0].toUpperCase())}</div>
+          <textarea id="comment-text" placeholder="Add a comment..." rows="1"></textarea>
+          <button class="primary" id="comment-btn">Comment</button>
+        `;
+        slot.querySelector('#comment-btn').onclick = postComment;
+      } else {
+        slot.innerHTML = `<button onclick="openAuthModal('login')">Sign in to comment</button>`;
+      }
+    }
+
+    async function sendLike(value) {
+      if (!ME) return openAuthModal('login');
+      if (video.my_like === value) value = 0;
+      const r = await api(`/api/videos/${encodeURIComponent(video.id)}/like`,
+        { method: 'POST', json: { value } });
+      video.my_like = r.my_like;
+      document.getElementById('like-count').textContent = formatViews(r.likes);
+      document.getElementById('dislike-count').textContent = formatViews(r.dislikes);
+      document.getElementById('like-btn').classList.toggle('active', r.my_like === 1);
+      document.getElementById('dislike-btn').classList.toggle('active', r.my_like === -1);
+    }
+
+    async function loadComments() {
+      const { comments } = await api(`/api/videos/${encodeURIComponent(videoId)}/comments`);
+      document.getElementById('comments-heading').textContent =
+        `${comments.length} Comment${comments.length === 1 ? '' : 's'}`;
+      document.getElementById('comment-list').innerHTML = comments.map(c => `
+        <div class="comment">
+          <a class="avatar" href="/channel/${c.user_id}">${esc(c.username[0].toUpperCase())}</a>
+          <div class="body">
+            <div class="who">${esc(c.username)}<span class="when">${timeAgo(c.created_at)}</span></div>
+            <div class="text">${esc(c.text)}</div>
+          </div>
+          ${ME && ME.id === c.user_id
+            ? `<button class="danger" onclick="deleteComment(${c.id})">Delete</button>` : ''}
+        </div>
+      `).join('') || '<div style="color:var(--text-dim)">No comments yet.</div>';
+    }
+
+    async function postComment() {
+      const box = document.getElementById('comment-text');
+      const text = box.value.trim();
+      if (!text) return;
+      await api(`/api/videos/${encodeURIComponent(videoId)}/comments`,
+        { method: 'POST', json: { text } });
+      box.value = '';
+      loadComments();
+    }
+
+    async function deleteComment(id) {
+      await api(`/api/comments/${id}`, { method: 'DELETE' });
+      loadComments();
+    }
+  </script>
+</body>
+</html>

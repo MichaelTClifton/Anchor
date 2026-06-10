@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Channel - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="channel-header"></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" hidden>This channel has no videos yet.</div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const channelId = location.pathname.split('/').pop();
+
+    document.addEventListener('auth-ready', async () => {
+      let channel;
+      try {
+        channel = await api(`/api/channels/${encodeURIComponent(channelId)}`);
+      } catch (err) {
+        document.getElementById('channel-header').innerHTML =
+          `<div class="empty">${esc(err.message)}</div>`;
+        return;
+      }
+      document.title = `${channel.username} - Anchor`;
+      const isMe = ME && ME.id === channel.id;
+      document.getElementById('channel-header').innerHTML = `
+        <div class="channel-header">
+          <div class="avatar">${esc(channel.username[0].toUpperCase())}</div>
+          <div>
+            <h1>${esc(channel.username)}</h1>
+            <div class="stats">
+              <span id="sub-count">${subscriberLabel(channel.subscribers)}</span> &middot;
+              ${channel.videos.length} videos &middot;
+              ${formatViews(channel.total_views)} total views &middot;
+              joined ${timeAgo(channel.created_at)}
+            </div>
+          </div>
+          ${isMe ? '' : `<button id="sub-btn" class="${channel.subscribed ? 'subscribed' : 'primary'}">
+            ${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+        </div>
+      `;
+      const subBtn = document.getElementById('sub-btn');
+      if (subBtn) subBtn.onclick = async () => {
+        if (!ME) return openAuthModal('login');
+        const r = await api(`/api/channels/${channel.id}/subscribe`, { method: 'POST' });
+        subBtn.textContent = r.subscribed ? 'Subscribed' : 'Subscribe';
+        subBtn.className = r.subscribed ? 'subscribed' : 'primary';
+        document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
+      };
+
+      if (channel.videos.length) {
+        document.getElementById('grid').innerHTML =
+          channel.videos.map(v => videoCard(v)).join('');
+      } else {
+        document.getElementById('empty').hidden = false;
+      }
+    }, { once: true });
+  </script>
+</body>
+</html>

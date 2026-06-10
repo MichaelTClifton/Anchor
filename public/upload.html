@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div class="panel">
+      <h2>Upload a video</h2>
+      <div id="upload-body">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file-input" accept="video/mp4,video/webm,video/ogg,video/quicktime">
+          <div style="font-size:40px">&#9875;</div>
+          <div><b>Click to choose a video</b> or drag one here</div>
+          <div style="font-size:13px;margin-top:6px">MP4, WebM, OGG or MOV &middot; up to 1 GB</div>
+        </label>
+        <form id="details" hidden>
+          <div class="field" style="margin-top:16px"><label>Title</label>
+            <input id="title" maxlength="120" required></div>
+          <div class="field"><label>Description</label>
+            <textarea id="description" rows="4" maxlength="5000"></textarea></div>
+          <div class="field"><label>Thumbnail (auto-captured from your video)</label>
+            <img class="thumb-preview" id="thumb-preview" alt="" hidden>
+            <span id="thumb-note" style="color:var(--text-dim);font-size:13px"></span></div>
+          <button class="primary" id="publish-btn" style="width:100%">Publish</button>
+          <div class="progress" hidden id="progress"><div id="progress-bar"></div></div>
+        </form>
+        <div class="error-msg" id="error"></div>
+      </div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    let file = null;
+    let thumbBlob = null;
+    let duration = null;
+
+    document.addEventListener('auth-ready', () => {
+      if (!ME) {
+        document.getElementById('upload-body').innerHTML =
+          `<div class="empty">You need an account to upload.<br><br>
+           <button class="primary" onclick="openAuthModal('login')">Sign in</button></div>`;
+      }
+    }, { once: true });
+
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+
+    fileInput.addEventListener('change', () => pickFile(fileInput.files[0]));
+    dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+    dropzone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropzone.classList.remove('drag');
+      pickFile(e.dataTransfer.files[0]);
+    });
+
+    function pickFile(f) {
+      if (!f) return;
+      if (!f.type.startsWith('video/')) return showError('That does not look like a video file.');
+      if (f.size > 1024 * 1024 * 1024) return showError('Videos are limited to 1 GB.');
+      file = f;
+      showError('');
+      dropzone.querySelector('b').textContent = f.name;
+      document.getElementById('details').hidden = false;
+      const title = document.getElementById('title');
+      if (!title.value) title.value = f.name.replace(/\.[^.]+$/, '');
+      captureThumbnail(f);
+    }
+
+    // Grab a frame ~10% in (no ffmpeg needed server-side).
+    function captureThumbnail(f) {
+      thumbBlob = null;
+      duration = null;
+      const note = document.getElementById('thumb-note');
+      note.textContent = 'Capturing thumbnail...';
+      const video = document.createElement('video');
+      video.muted = true;
+      video.preload = 'metadata';
+      video.src = URL.createObjectURL(f);
+      const fail = () => { note.textContent = 'Could not capture a thumbnail; a placeholder will be used.'; };
+      video.onerror = fail;
+      video.onloadedmetadata = () => {
+        duration = video.duration;
+        video.currentTime = Math.min(video.duration * 0.1, 5) || 0;
+      };
+      video.onseeked = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = Math.round(640 * video.videoHeight / video.videoWidth) || 360;
+          canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => {
+            if (!blob) return fail();
+            thumbBlob = blob;
+            const img = document.getElementById('thumb-preview');
+            img.src = URL.createObjectURL(blob);
+            img.hidden = false;
+            note.textContent = '';
+          }, 'image/jpeg', 0.8);
+        } catch (e) {
+          fail();
+        } finally {
+          URL.revokeObjectURL(video.src);
+        }
+      };
+    }
+
+    document.getElementById('details').addEventListener('submit', e => {
+      e.preventDefault();
+      publish();
+    });
+
+    function publish() {
+      const title = document.getElementById('title').value.trim();
+      if (!file) return showError('Choose a video first.');
+      if (!title) return showError('A title is required.');
+      showError('');
+
+      const form = new FormData();
+      form.append('title', title);
+      form.append('description', document.getElementById('description').value);
+      if (duration) form.append('duration', duration);
+      if (thumbBlob) form.append('thumbnail', thumbBlob, 'thumb.jpg');
+      form.append('video', file);
+
+      const btn = document.getElementById('publish-btn');
+      btn.disabled = true;
+      btn.textContent = 'Uploading...';
+      document.getElementById('progress').hidden = false;
+
+      // XHR instead of fetch for upload progress events.
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/videos');
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+          document.getElementById('progress-bar').style.width =
+            `${Math.round(100 * e.loaded / e.total)}%`;
+        }
+      };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status === 200 && data.id) {
+          location.href = `/watch/${data.id}`;
+        } else {
+          resetButton();
+          showError(data.error || 'Upload failed.');
+        }
+      };
+      xhr.onerror = () => { resetButton(); showError('Upload failed - network error.'); };
+      xhr.send(form);
+
+      function resetButton() {
+        btn.disabled = false;
+        btn.textContent = 'Publish';
+        document.getElementById('progress').hidden = true;
+        document.getElementById('progress-bar').style.width = '0';
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('error').textContent = msg;
+    }
+  </script>
+</body>
+</html>

@@ -61,12 +61,17 @@
               <button id="dislike-btn" class="${v.my_like === -1 ? 'active' : ''}">
                 &#128078; <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
             </div>
-            ${v.is_owner ? '<button class="danger" id="delete-btn">Delete video</button>' : ''}
+            ${v.is_owner ? '<button id="edit-btn">Edit</button><button class="danger" id="delete-btn">Delete video</button>' : ''}
           </div>
         </div>
+        <div id="edit-panel" hidden></div>
         <div class="description">
           <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}<span id="processing-note" ${v.status === 'processing' ? '' : 'hidden'}> &middot; &#9881; preparing more qualities&hellip;</span></div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
         </div>
+        ${(v.tags && v.tags.length) || v.category ? `<div class="tag-row">
+          ${v.category ? `<a class="chip cat" href="/browse?category=${encodeURIComponent(v.category)}">${esc(v.category)}</a>` : ''}
+          ${(v.tags || []).map(t => `<a class="chip" href="/?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}
+        </div>` : ''}
         <div class="comments">
           <h3 id="comments-heading">Comments</h3>
           <div class="comment-form" id="comment-form-slot"></div>
@@ -97,6 +102,9 @@
         location.href = '/';
       };
 
+      const editBtn = document.getElementById('edit-btn');
+      if (editBtn) editBtn.onclick = toggleEdit;
+
       const slot = document.getElementById('comment-form-slot');
       if (ME) {
         slot.innerHTML = `
@@ -107,6 +115,48 @@
         slot.querySelector('#comment-btn').onclick = postComment;
       } else {
         slot.innerHTML = `<button onclick="openAuthModal('login')">Sign in to comment</button>`;
+      }
+    }
+
+    const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
+
+    function toggleEdit() {
+      const panel = document.getElementById('edit-panel');
+      if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; return; }
+      const v = video;
+      panel.hidden = false;
+      panel.innerHTML = `
+        <div class="field"><label>Title</label>
+          <input id="edit-title" maxlength="120" value="${esc(v.title)}"></div>
+        <div class="field"><label>Description</label>
+          <textarea id="edit-desc" rows="3" maxlength="5000">${esc(v.description)}</textarea></div>
+        <div class="field"><label>Category</label>
+          <select id="edit-cat"><option value="">No category</option>
+            ${CATEGORIES.map(c => `<option ${c === v.category ? 'selected' : ''}>${c}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>Tags (comma-separated, up to 5)</label>
+          <input id="edit-tags" maxlength="120" value="${esc((v.tags || []).join(', '))}"></div>
+        <button class="primary" id="edit-save">Save changes</button>
+        <button id="edit-cancel">Cancel</button>
+        <div class="error-msg" id="edit-error"></div>`;
+      panel.querySelector('#edit-cancel').onclick = toggleEdit;
+      panel.querySelector('#edit-save').onclick = saveEdit;
+    }
+
+    async function saveEdit() {
+      try {
+        await api(`/api/videos/${encodeURIComponent(video.id)}`, {
+          method: 'PATCH',
+          json: {
+            title: document.getElementById('edit-title').value,
+            description: document.getElementById('edit-desc').value,
+            category: document.getElementById('edit-cat').value,
+            tags: document.getElementById('edit-tags').value,
+          },
+        });
+        location.reload();
+      } catch (err) {
+        document.getElementById('edit-error').textContent = err.message;
       }
     }
 

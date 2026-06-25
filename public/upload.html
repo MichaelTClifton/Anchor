@@ -23,6 +23,15 @@
             <input id="title" maxlength="120" required></div>
           <div class="field"><label>Description</label>
             <textarea id="description" rows="4" maxlength="5000"></textarea></div>
+          <div class="field"><label for="category">Category</label>
+            <select id="category">
+              <option value="">No category</option>
+              <option>Music</option><option>Gaming</option><option>Education</option>
+              <option>Tech</option><option>Vlog</option><option>News</option>
+              <option>Sports</option><option>Other</option>
+            </select></div>
+          <div class="field"><label for="tags">Tags (comma-separated, up to 5)</label>
+            <input id="tags" placeholder="e.g. music, piano, tutorial" maxlength="120"></div>
           <div class="field"><label>Thumbnail (auto-captured from your video)</label>
             <img class="thumb-preview" id="thumb-preview" alt="" hidden>
             <span id="thumb-note" style="color:var(--text-dim);font-size:13px"></span></div>
@@ -124,6 +133,8 @@
       const form = new FormData();
       form.append('title', title);
       form.append('description', document.getElementById('description').value);
+      form.append('category', document.getElementById('category').value);
+      form.append('tags', document.getElementById('tags').value);
       if (duration) form.append('duration', duration);
       if (thumbBlob) form.append('thumbnail', thumbBlob, 'thumb.jpg');
       form.append('video', file);

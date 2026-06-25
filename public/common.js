@@ -83,14 +83,67 @@ function renderHeader() {
   document.body.insertAdjacentHTML('afterbegin', `
     <header>
       <a class="logo" href="/"><span class="mark">&#9875;</span> Anchor</a>
-      <form class="search" action="/" method="get">
-        <input name="q" type="search" placeholder="Search" value="${esc(q)}">
+      <form class="search" action="/" method="get" role="search" autocomplete="off">
+        <div class="search-box">
+          <input name="q" id="search-input" type="search" placeholder="Search" value="${esc(q)}"
+            aria-label="Search" aria-autocomplete="list" aria-controls="suggest-list" aria-expanded="false">
+          <ul class="suggest" id="suggest-list" role="listbox" hidden></ul>
+        </div>
         <button type="submit" aria-label="Search">&#128269;</button>
       </form>
       <div class="header-actions" id="header-actions"></div>
     </header>
   `);
+  initAutocomplete();
   refreshHeaderActions();
+}
+
+// Search-as-you-type dropdown wired to /api/search/suggest.
+function initAutocomplete() {
+  const input = document.getElementById('search-input');
+  const list = document.getElementById('suggest-list');
+  if (!input) return;
+  let items = [], active = -1, timer = null;
+
+  const go = value => { location.href = '/?q=' + encodeURIComponent(value); };
+  function close() {
+    list.hidden = true; list.innerHTML = ''; items = []; active = -1;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  }
+  function render() {
+    list.innerHTML = items.map((s, i) =>
+      `<li role="option" id="sug-${i}" class="${i === active ? 'active' : ''}">${esc(s)}</li>`).join('');
+    list.hidden = !items.length;
+    input.setAttribute('aria-expanded', items.length ? 'true' : 'false');
+    [...list.children].forEach((li, i) => {
+      li.onmousedown = e => { e.preventDefault(); go(items[i]); };
+    });
+  }
+  function highlight() {
+    [...list.children].forEach((li, i) => li.classList.toggle('active', i === active));
+    if (active >= 0) input.setAttribute('aria-activedescendant', `sug-${active}`);
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(timer);
+    if (q.length < 2) return close();
+    timer = setTimeout(async () => {
+      try {
+        const { suggestions } = await api('/api/search/suggest?q=' + encodeURIComponent(q));
+        items = suggestions; active = -1; render();
+      } catch (e) { close(); }
+    }, 150);
+  });
+  input.addEventListener('keydown', e => {
+    if (list.hidden || !items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; highlight(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + items.length) % items.length; highlight(); }
+    else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); go(items[active]); }
+    else if (e.key === 'Escape') { close(); }
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.search')) close(); });
 }
 
 async function refreshHeaderActions() {

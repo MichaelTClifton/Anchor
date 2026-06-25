@@ -136,9 +136,10 @@ app.post('/api/videos', requireAuth,
     }
     const id = crypto.randomBytes(6).toString('base64url');
     const duration = parseFloat(req.body.duration);
+    const category = CATEGORIES.includes(req.body.category) ? req.body.category : null;
     db.prepare(`
-      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration, status, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, req.user.id, title,
       String(req.body.description || '').trim().slice(0, 5000),
@@ -146,39 +147,171 @@ app.post('/api/videos', requireAuth,
       thumbFile ? thumbFile.filename : null,
       Number.isFinite(duration) ? duration : null,
       transcode.available ? 'processing' : 'ready',
+      category,
     );
+    setTags(id, req.body.tags); // also writes the search-index row
     transcode.enqueue(id);
     res.json({ id });
   });
 
 // ---------- video listing / detail ----------
 
-const VIDEO_SELECT = `
-  SELECT v.id, v.title, v.description, v.filename, v.thumbnail, v.duration,
-         v.views, v.created_at, v.status, u.id AS channel_id, u.username AS channel_name
-  FROM videos v JOIN users u ON u.id = v.user_id
-`;
+const VIDEO_COLS = `v.id, v.title, v.description, v.filename, v.thumbnail, v.duration,
+         v.views, v.created_at, v.status, v.category,
+         u.id AS channel_id, u.username AS channel_name`;
+const VIDEO_SELECT = `SELECT ${VIDEO_COLS} FROM videos v JOIN users u ON u.id = v.user_id`;
 
 function getRenditions(videoId) {
   return db.prepare('SELECT height, filename FROM renditions WHERE video_id = ? ORDER BY height DESC')
     .all(videoId);
 }
 
+// ---------- search / tags / pagination helpers ----------
+
+function clampLimit(raw, def = 24, max = 50) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(1, n)) : def;
+}
+
+function encodeCursor(obj) {
+  return Buffer.from(JSON.stringify(obj)).toString('base64url');
+}
+function decodeCursor(s) {
+  if (!s) return null;
+  try { return JSON.parse(Buffer.from(String(s), 'base64url').toString('utf8')); }
+  catch (e) { return null; }
+}
+
+// Over-fetch limit+1 rows, then split off the page and derive the next cursor.
+function pageResult(rows, limit, keyFn) {
+  let nextCursor = null;
+  if (rows.length > limit) {
+    rows = rows.slice(0, limit);
+    nextCursor = encodeCursor(keyFn(rows[rows.length - 1]));
+  }
+  return { videos: rows, nextCursor };
+}
+
+// Keyset-paginated reverse-chronological feed with an optional extra filter.
+function chronoFeed(extraWhere, params, cursor, limit) {
+  const clauses = [];
+  const args = [...params];
+  if (extraWhere) clauses.push(extraWhere);
+  if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
+    clauses.push('(v.created_at < ? OR (v.created_at = ? AND v.id < ?))');
+    args.push(cursor.t, cursor.t, cursor.id);
+  }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  args.push(limit + 1);
+  const rows = db.prepare(`${VIDEO_SELECT} ${where}
+    ORDER BY v.created_at DESC, v.id DESC LIMIT ?`).all(...args);
+  return pageResult(rows, limit, last => ({ t: last.created_at, id: last.id }));
+}
+
+// Turn a raw query into a safe FTS5 MATCH string: quote each token, prefix the last.
+function ftsQuery(q) {
+  const tokens = String(q).toLowerCase().match(/[\p{L}\p{N}]+/gu);
+  if (!tokens || !tokens.length) return null;
+  return tokens.map((t, i) => `"${t}"${i === tokens.length - 1 ? '*' : ''}`).join(' ');
+}
+// bm25 weights: title > tags > channel > description (lower score = more relevant).
+const BM25 = 'bm25(videos_fts, 8.0, 2.0, 4.0, 3.0)';
+
+function normalizeTags(raw) {
+  return [...new Set(String(raw || '').split(',')
+    .map(t => t.trim().toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean))].slice(0, 5);
+}
+
+const upsertTag = db.prepare(
+  'INSERT INTO tags (name) VALUES (?) ON CONFLICT (name) DO UPDATE SET name = name RETURNING id');
+const replaceTags = db.transaction((videoId, names) => {
+  db.prepare('DELETE FROM video_tags WHERE video_id = ?').run(videoId);
+  for (const name of names) {
+    const { id } = upsertTag.get(name);
+    db.prepare('INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)').run(videoId, id);
+  }
+});
+// Replace a video's tags and refresh its search-index row.
+function setTags(videoId, raw) {
+  replaceTags(videoId, normalizeTags(raw));
+  reindexVideo(videoId);
+}
+function tagsForVideo(videoId) {
+  return db.prepare(`SELECT t.name FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
+    WHERE vt.video_id = ? ORDER BY t.name`).all(videoId).map(r => r.name);
+}
+
+// Tag-based related videos, topped up to 12 with popular videos as a fallback.
+function relatedVideos(videoId) {
+  const out = db.prepare(`SELECT ${VIDEO_COLS}, COUNT(vt2.tag_id) AS shared
+    FROM video_tags vt1
+    JOIN video_tags vt2 ON vt2.tag_id = vt1.tag_id AND vt2.video_id <> vt1.video_id
+    JOIN videos v ON v.id = vt2.video_id
+    JOIN users u ON u.id = v.user_id
+    WHERE vt1.video_id = ?
+    GROUP BY v.id
+    ORDER BY shared DESC, v.views DESC, v.created_at DESC
+    LIMIT 12`).all(videoId);
+  if (out.length < 12) {
+    const have = new Set([videoId, ...out.map(v => v.id)]);
+    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ?
+      ORDER BY v.views DESC, v.created_at DESC LIMIT 40`).all(videoId);
+    for (const f of fillers) {
+      if (out.length >= 12) break;
+      if (!have.has(f.id)) { have.add(f.id); out.push(f); }
+    }
+  }
+  return out;
+}
+
 app.get('/api/videos', (req, res) => {
   const q = String(req.query.q || '').trim();
   const channel = parseInt(req.query.channel, 10);
-  let rows;
+  const category = String(req.query.category || '').trim();
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+
   if (q) {
-    const like = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
-    rows = db.prepare(`${VIDEO_SELECT}
-      WHERE v.title LIKE ? ESCAPE '\\' OR v.description LIKE ? ESCAPE '\\' OR u.username LIKE ? ESCAPE '\\'
-      ORDER BY v.created_at DESC LIMIT 100`).all(like, like, like);
-  } else if (Number.isInteger(channel)) {
-    rows = db.prepare(`${VIDEO_SELECT} WHERE v.user_id = ? ORDER BY v.created_at DESC LIMIT 100`).all(channel);
-  } else {
-    rows = db.prepare(`${VIDEO_SELECT} ORDER BY v.created_at DESC LIMIT 100`).all();
+    const match = ftsQuery(q);
+    if (!match) return res.json({ videos: [], nextCursor: null });
+    const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
+    const rows = db.prepare(`SELECT ${VIDEO_COLS}
+      FROM videos_fts
+      JOIN videos v ON v.id = videos_fts.video_id
+      JOIN users u ON u.id = v.user_id
+      WHERE videos_fts MATCH ?
+      ORDER BY ${BM25}, v.created_at DESC
+      LIMIT ? OFFSET ?`).all(match, limit + 1, offset);
+    return res.json(pageResult(rows, limit, () => ({ o: offset + limit })));
   }
-  res.json({ videos: rows });
+  if (category) return res.json(chronoFeed('v.category = ?', [category], cursor, limit));
+  if (Number.isInteger(channel)) return res.json(chronoFeed('v.user_id = ?', [channel], cursor, limit));
+  res.json(chronoFeed('', [], cursor, limit));
+});
+
+// Search-as-you-type suggestions (de-duplicated titles, most relevant first).
+app.get('/api/search/suggest', (req, res) => {
+  const match = ftsQuery(req.query.q || '');
+  if (!match) return res.json({ suggestions: [] });
+  const rows = db.prepare(`SELECT title FROM videos_fts WHERE videos_fts MATCH ?
+    ORDER BY ${BM25} LIMIT 12`).all(match);
+  const seen = new Set(), out = [];
+  for (const { title } of rows) {
+    const key = title.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push(title); }
+    if (out.length >= 8) break;
+  }
+  res.json({ suggestions: out });
+});
+
+// Fixed category list plus how many videos sit in each (for browse chips).
+app.get('/api/categories', (req, res) => {
+  const counts = Object.fromEntries(db.prepare(
+    `SELECT category, COUNT(*) AS n FROM videos
+     WHERE category IS NOT NULL AND category <> '' GROUP BY category`).all()
+    .map(c => [c.category, c.n]));
+  res.json({ categories: CATEGORIES.map(name => ({ name, count: counts[name] || 0 })) });
 });
 
 app.get('/api/videos/:id', (req, res) => {
@@ -205,10 +338,40 @@ app.get('/api/videos/:id', (req, res) => {
     : false;
   video.is_owner = !!me && me.id === video.channel_id;
 
+  if (me) {
+    const h = db.prepare('SELECT position, completed FROM watch_history WHERE user_id = ? AND video_id = ?')
+      .get(me.id, video.id);
+    video.resume = h && !h.completed ? h.position : 0;
+    video.in_watch_later = !!db.prepare('SELECT 1 FROM watch_later WHERE user_id = ? AND video_id = ?')
+      .get(me.id, video.id);
+  } else {
+    video.resume = 0;
+    video.in_watch_later = false;
+  }
+
+  video.tags = tagsForVideo(video.id);
   video.renditions = getRenditions(video.id);
-  video.related = db.prepare(`${VIDEO_SELECT} WHERE v.id != ? ORDER BY v.views DESC, v.created_at DESC LIMIT 12`)
-    .all(video.id);
+  video.related = relatedVideos(video.id);
   res.json(video);
+});
+
+// Edit a video's title/description/tags/category (owner only); keeps FTS synced.
+app.patch('/api/videos/:id', requireAuth, (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found.' });
+  if (video.user_id !== req.user.id) return res.status(403).json({ error: 'You can only edit your own videos.' });
+  const title = req.body.title !== undefined
+    ? String(req.body.title).trim().slice(0, 120) : video.title;
+  if (!title) return res.status(400).json({ error: 'A title is required.' });
+  const description = req.body.description !== undefined
+    ? String(req.body.description).trim().slice(0, 5000) : video.description;
+  const category = req.body.category !== undefined
+    ? (CATEGORIES.includes(req.body.category) ? req.body.category : null) : video.category;
+  db.prepare('UPDATE videos SET title = ?, description = ?, category = ? WHERE id = ?')
+    .run(title, description, category, video.id);
+  if (req.body.tags !== undefined) setTags(video.id, req.body.tags);
+  else reindexVideo(video.id);
+  res.json({ ok: true, tags: tagsForVideo(video.id) });
 });
 
 // Polled by the watch page while a video is processing; unlike the detail
@@ -322,6 +485,7 @@ app.post('/api/channels/:id/subscribe', requireAuth, (req, res) => {
 app.get('/watch/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
 app.get('/channel/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
 app.get('/upload', (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
+app.get('/browse', (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));
 
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {

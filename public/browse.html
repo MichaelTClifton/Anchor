@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Browse - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div class="chip-bar" id="chip-bar"></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" hidden></div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const category = new URLSearchParams(location.search).get('category') || '';
+
+    (async () => {
+      const { categories } = await api('/api/categories');
+      document.getElementById('chip-bar').innerHTML =
+        `<a class="chip ${category ? '' : 'active'}" href="/browse">All</a>` +
+        categories.map(c =>
+          `<a class="chip ${c.name === category ? 'active' : ''}" href="/browse?category=${encodeURIComponent(c.name)}">${esc(c.name)} <span class="n">${c.count}</span></a>`
+        ).join('');
+
+      if (category) document.title = `${category} - Anchor`;
+      const url = '/api/videos' + (category ? `?category=${encodeURIComponent(category)}` : '');
+      const { videos } = await api(url);
+      const grid = document.getElementById('grid');
+      const empty = document.getElementById('empty');
+      if (!videos.length) {
+        empty.hidden = false;
+        empty.textContent = category
+          ? `No videos in ${category} yet.`
+          : 'No videos yet.';
+        return;
+      }
+      grid.innerHTML = videos.map(v => videoCard(v)).join('');
+    })();
+  </script>
+</body>
+</html>

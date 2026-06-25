@@ -3,8 +3,10 @@ const multer = require('multer');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const { db, UPLOADS_DIR, THUMBS_DIR } = require('./db');
+const { db, UPLOADS_DIR, THUMBS_DIR, reindexVideo } = require('./db');
 const transcode = require('./transcode');
+
+const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
 
 const PORT = process.env.PORT || 3000;
 const MAX_VIDEO_BYTES = 1024 * 1024 * 1024; // 1 GB

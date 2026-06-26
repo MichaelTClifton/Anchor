@@ -26,18 +26,13 @@
         ).join('');
 
       if (category) document.title = `${category} - Anchor`;
-      const url = '/api/videos' + (category ? `?category=${encodeURIComponent(category)}` : '');
-      const { videos } = await api(url);
-      const grid = document.getElementById('grid');
-      const empty = document.getElementById('empty');
-      if (!videos.length) {
-        empty.hidden = false;
-        empty.textContent = category
-          ? `No videos in ${category} yet.`
-          : 'No videos yet.';
-        return;
-      }
-      grid.innerHTML = videos.map(v => videoCard(v)).join('');
+      mountFeed(cursor => {
+        const params = new URLSearchParams();
+        if (category) params.set('category', category);
+        if (cursor) params.set('cursor', cursor);
+        const qs = params.toString();
+        return api('/api/videos' + (qs ? `?${qs}` : ''));
+      }, { emptyMsg: category ? `No videos in ${category} yet.` : 'No videos yet.' });
     })();
   </script>
 </body>

@@ -1,4 +1,7 @@
-// Shared helpers: header, auth modal, formatting.
+// Shared helpers: header, sidebar, theme, toasts, auth modal, formatting.
+
+// Apply the saved theme as early as possible to limit any flash.
+document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark';
 
 let ME = null;
 
@@ -52,6 +55,76 @@ async function api(path, options = {}) {
   return data;
 }
 
+// ---------- toasts ----------
+
+function toast(msg, type = '') {
+  let stack = document.getElementById('toast-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'toast-stack';
+    stack.setAttribute('aria-live', 'polite');
+    document.body.appendChild(stack);
+  }
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  stack.appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, 3200);
+}
+
+// ---------- skeleton placeholders ----------
+
+function skeletonGrid(n = 8) {
+  return Array.from({ length: n }, () => `<div class="card sk-card">
+    <div class="thumb skeleton"></div>
+    <div class="info"><div class="sk-line skeleton"></div>
+      <div class="sk-line short skeleton"></div></div>
+  </div>`).join('');
+}
+
+// ---------- paginated feed with infinite scroll ----------
+// fetchPage(cursor) must resolve to { videos, nextCursor }. Renders into #grid.
+async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = videoCard } = {}) {
+  const grid = document.getElementById('grid');
+  if (!grid) return;
+  grid.innerHTML = skeletonGrid(8);
+  let cursor = null, started = false, busy = false, done = false;
+
+  async function fetchInto() {
+    busy = true;
+    let data;
+    try {
+      data = await fetchPage(cursor);
+    } catch (e) {
+      if (!started) grid.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      else toast(e.message, 'error');
+      busy = false; done = true;
+      return;
+    }
+    const vids = data.videos || [];
+    if (!started) { grid.innerHTML = ''; started = true; }
+    grid.insertAdjacentHTML('beforeend', vids.map(card).join(''));
+    cursor = data.nextCursor || null;
+    if (!cursor) done = true;
+    if (!grid.children.length) grid.innerHTML = `<div class="empty">${esc(emptyMsg)}</div>`;
+    busy = false;
+  }
+
+  await fetchInto();
+  if (done) return;
+
+  const sentinel = document.createElement('div');
+  sentinel.className = 'scroll-sentinel';
+  grid.after(sentinel);
+  const io = new IntersectionObserver(async entries => {
+    if (entries[0].isIntersecting && !busy && !done) {
+      await fetchInto();
+      if (done) { io.disconnect(); sentinel.remove(); }
+    }
+  }, { rootMargin: '600px' });
+  io.observe(sentinel);
+}
+
 function videoCard(v, { side = false } = {}) {
   const thumb = v.thumbnail
     ? `<img src="/thumbs/${esc(v.thumbnail)}" alt="" loading="lazy">`
@@ -82,6 +155,7 @@ function renderHeader() {
   const q = new URLSearchParams(location.search).get('q') || '';
   document.body.insertAdjacentHTML('afterbegin', `
     <header>
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Toggle menu" aria-expanded="false">&#9776;</button>
       <a class="logo" href="/"><span class="mark">&#9875;</span> Anchor</a>
       <form class="search" action="/" method="get" role="search" autocomplete="off">
         <div class="search-box">
@@ -91,11 +165,70 @@ function renderHeader() {
         </div>
         <button type="submit" aria-label="Search">&#128269;</button>
       </form>
+      <button class="icon-btn" id="theme-toggle" aria-label="Toggle light or dark theme" title="Toggle theme"></button>
       <div class="header-actions" id="header-actions"></div>
     </header>
   `);
+  renderSidebar();
+  initTheme();
   initAutocomplete();
   refreshHeaderActions();
+}
+
+// ---------- sidebar ----------
+
+const SIDEBAR_SECTIONS = [
+  [['/', '\u{1F3E0}', 'Home'], ['/trending', '\u{1F525}', 'Trending'], ['/browse', '\u{1F5C2}', 'Browse']],
+  [['/subscriptions', '\u{1F4FA}', 'Subscriptions'], ['/history', '\u{1F553}', 'History'],
+   ['/liked', '\u{1F44D}', 'Liked'], ['/later', '\u{1F516}', 'Watch Later']],
+];
+
+function renderSidebar() {
+  const main = document.querySelector('main');
+  if (!main || document.querySelector('.app-shell')) return;
+  const here = location.pathname;
+  const link = ([href, icon, label]) =>
+    `<a href="${href}" class="nav-link${here === href ? ' active' : ''}"
+        ${here === href ? 'aria-current="page"' : ''}><span class="ic" aria-hidden="true">${icon}</span> ${label}</a>`;
+  const nav = document.createElement('nav');
+  nav.className = 'sidebar';
+  nav.id = 'sidebar';
+  nav.setAttribute('aria-label', 'Main');
+  nav.innerHTML = SIDEBAR_SECTIONS.map((sec, i) =>
+    `<div class="nav-section">${sec.map(link).join('')}</div>`).join('');
+
+  const shell = document.createElement('div');
+  shell.className = 'app-shell';
+  main.parentNode.insertBefore(shell, main);
+  shell.appendChild(nav);
+  shell.appendChild(main);
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sidebar-backdrop';
+  backdrop.id = 'sidebar-backdrop';
+  document.body.appendChild(backdrop);
+  const close = () => { nav.classList.remove('open'); backdrop.classList.remove('show');
+    document.getElementById('menu-btn').setAttribute('aria-expanded', 'false'); };
+  backdrop.onclick = close;
+  document.getElementById('menu-btn').onclick = () => {
+    const open = nav.classList.toggle('open');
+    backdrop.classList.toggle('show', open);
+    document.getElementById('menu-btn').setAttribute('aria-expanded', String(open));
+  };
+}
+
+// ---------- theme ----------
+
+function initTheme() {
+  const btn = document.getElementById('theme-toggle');
+  const paint = () => { btn.textContent = document.documentElement.dataset.theme === 'dark' ? '☀' : '☽'; };
+  paint();
+  btn.onclick = () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('theme', next);
+    paint();
+  };
 }
 
 // Search-as-you-type dropdown wired to /api/search/suggest.

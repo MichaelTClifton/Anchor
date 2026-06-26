@@ -460,8 +460,15 @@ app.get('/api/channels/:id', (req, res) => {
   channel.subscribed = me
     ? !!db.prepare('SELECT 1 FROM subscriptions WHERE subscriber_id = ? AND channel_id = ?').get(me.id, channel.id)
     : false;
-  channel.videos = db.prepare(`${VIDEO_SELECT} WHERE v.user_id = ? ORDER BY v.created_at DESC LIMIT 100`).all(channel.id);
+  channel.video_count = db.prepare('SELECT COUNT(*) AS n FROM videos WHERE user_id = ?').get(channel.id).n;
   res.json(channel);
+});
+
+// Paginated videos for a channel page (infinite scroll).
+app.get('/api/channels/:id/videos', (req, res) => {
+  const channelId = parseInt(req.params.id, 10);
+  if (!Number.isInteger(channelId)) return res.status(400).json({ error: 'Bad channel id.' });
+  res.json(chronoFeed('v.user_id = ?', [channelId], decodeCursor(req.query.cursor), clampLimit(req.query.limit)));
 });
 
 app.post('/api/channels/:id/subscribe', requireAuth, (req, res) => {

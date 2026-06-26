@@ -11,7 +11,6 @@
   <main>
     <div id="channel-header"></div>
     <div class="grid" id="grid"></div>
-    <div class="empty" id="empty" hidden>This channel has no videos yet.</div>
   </main>
   <script src="/common.js"></script>
   <script>
@@ -35,7 +34,7 @@
             <h1>${esc(channel.username)}</h1>
             <div class="stats">
               <span id="sub-count">${subscriberLabel(channel.subscribers)}</span> &middot;
-              ${channel.videos.length} videos &middot;
+              ${channel.video_count} videos &middot;
               ${formatViews(channel.total_views)} total views &middot;
               joined ${timeAgo(channel.created_at)}
             </div>
@@ -53,12 +52,9 @@
         document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
       };
 
-      if (channel.videos.length) {
-        document.getElementById('grid').innerHTML =
-          channel.videos.map(v => videoCard(v)).join('');
-      } else {
-        document.getElementById('empty').hidden = false;
-      }
+      mountFeed(
+        cursor => api(`/api/channels/${encodeURIComponent(channel.id)}/videos${cursor ? `?cursor=${cursor}` : ''}`),
+        { emptyMsg: 'This channel has no videos yet.' });
     }, { once: true });
   </script>
 </body>

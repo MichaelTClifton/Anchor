@@ -11,29 +11,22 @@
   <main>
     <div id="results-heading"></div>
     <div class="grid" id="grid"></div>
-    <div class="empty" id="empty" hidden></div>
   </main>
   <script src="/common.js"></script>
   <script>
-    (async () => {
-      const q = new URLSearchParams(location.search).get('q');
-      const { videos } = await api('/api/videos' + (q ? `?q=${encodeURIComponent(q)}` : ''));
-      if (q) {
-        document.getElementById('results-heading').innerHTML =
-          `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
-        document.title = `${q} - Anchor`;
-      }
-      const grid = document.getElementById('grid');
-      const empty = document.getElementById('empty');
-      if (!videos.length) {
-        empty.hidden = false;
-        empty.textContent = q
-          ? 'No videos matched your search.'
-          : 'No videos yet. Be the first to upload one!';
-        return;
-      }
-      grid.innerHTML = videos.map(v => videoCard(v)).join('');
-    })();
+    const q = new URLSearchParams(location.search).get('q');
+    if (q) {
+      document.getElementById('results-heading').innerHTML =
+        `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
+      document.title = `${q} - Anchor`;
+    }
+    mountFeed(cursor => {
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (cursor) params.set('cursor', cursor);
+      const qs = params.toString();
+      return api('/api/videos' + (qs ? `?${qs}` : ''));
+    }, { emptyMsg: q ? 'No videos matched your search.' : 'No videos yet. Be the first to upload one!' });
   </script>
 </body>
 </html>

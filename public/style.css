@@ -325,6 +325,45 @@ main { flex: 1; min-width: 0; padding: 24px; }
 }
 .card:hover .thumb { outline: 2px solid var(--brand); }
 
+.resume-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: #ffffff33;
+}
+.resume-bar div { height: 100%; background: var(--danger); }
+
+.thumb-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  background: #000000aa;
+  color: #fff;
+  font-size: 15px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.card:hover .thumb-btn { display: inline-flex; }
+.thumb-btn:hover { background: #000000dd; filter: none; }
+.card-x { font-size: 20px; }
+
+/* horizontal shelf (continue watching) */
+.row {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+  scroll-snap-type: x proximity;
+}
+.row .card { width: 280px; flex-shrink: 0; scroll-snap-align: start; }
+
 .card .info { padding: 10px 4px 0; }
 .card .title {
   font-weight: 600;

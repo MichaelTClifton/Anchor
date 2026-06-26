@@ -9,6 +9,7 @@
 </head>
 <body>
   <main>
+    <div id="continue-row"></div>
     <div id="results-heading"></div>
     <div class="grid" id="grid"></div>
   </main>
@@ -19,6 +20,18 @@
       document.getElementById('results-heading').innerHTML =
         `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
       document.title = `${q} - Anchor`;
+    } else {
+      // Continue-watching shelf for signed-in viewers.
+      document.addEventListener('auth-ready', async () => {
+        if (!ME) return;
+        try {
+          const { videos } = await api('/api/history?incomplete=1&limit=12');
+          if (videos.length) {
+            document.getElementById('continue-row').innerHTML =
+              `<h2>Continue watching</h2><div class="row">${videos.map(v => videoCard(v)).join('')}</div>`;
+          }
+        } catch (e) { /* not signed in / no history */ }
+      }, { once: true });
     }
     mountFeed(cursor => {
       const params = new URLSearchParams();

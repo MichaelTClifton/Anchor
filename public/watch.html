@@ -61,6 +61,7 @@
               <button id="dislike-btn" class="${v.my_like === -1 ? 'active' : ''}">
                 &#128078; <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
             </div>
+            ${ME ? `<button id="wl-btn2" class="${v.in_watch_later ? 'active' : ''}">${v.in_watch_later ? '✓ Saved' : '+ Watch Later'}</button>` : ''}
             ${v.is_owner ? '<button id="edit-btn">Edit</button><button class="danger" id="delete-btn">Delete video</button>' : ''}
           </div>
         </div>
@@ -116,6 +117,46 @@
       } else {
         slot.innerHTML = `<button onclick="openAuthModal('login')">Sign in to comment</button>`;
       }
+
+      const wlBtn = document.getElementById('wl-btn2');
+      if (wlBtn) wlBtn.onclick = async () => {
+        try {
+          const r = await api('/api/watch-later', { method: 'POST', json: { video_id: v.id } });
+          video.in_watch_later = r.in_watch_later;
+          wlBtn.textContent = r.in_watch_later ? '✓ Saved' : '+ Watch Later';
+          wlBtn.classList.toggle('active', r.in_watch_later);
+          toast(r.in_watch_later ? 'Saved to Watch Later' : 'Removed from Watch Later');
+        } catch (err) { toast(err.message, 'error'); }
+      };
+
+      setupResumeAndProgress();
+    }
+
+    // Resume from the saved position and report progress back periodically.
+    function setupResumeAndProgress() {
+      const player = document.querySelector('.player');
+      if (video.resume && video.resume > 5) {
+        player.addEventListener('loadedmetadata', () => {
+          if (video.resume < player.duration - 5) {
+            player.currentTime = video.resume;
+            toast(`Resumed from ${formatDuration(video.resume)}`);
+          }
+        }, { once: true });
+      }
+      if (!ME) return;
+      const send = beacon => {
+        if (!player.duration) return;
+        const payload = { video_id: video.id, position: player.currentTime, duration: player.duration };
+        if (beacon && navigator.sendBeacon) {
+          navigator.sendBeacon('/api/history',
+            new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+        } else {
+          api('/api/history', { method: 'POST', json: payload }).catch(() => {});
+        }
+      };
+      setInterval(() => { if (!player.paused) send(false); }, 15000);
+      player.addEventListener('pause', () => send(false));
+      window.addEventListener('beforeunload', () => send(true));
     }
 
     const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];

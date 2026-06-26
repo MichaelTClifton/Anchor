@@ -11,9 +11,10 @@ incrementally to `claude/video-hosting-site-32royz`.
 - [x] **Phase 2 — UI foundation.** Infinite scroll via `mountFeed()` on
   home/search/browse/channel; left sidebar nav + mobile drawer; light/dark theme
   toggle (persisted); toast + skeleton helpers; focus-visible + ARIA.
-- [ ] **Phase 3 — History + feeds.** Watch history/resume, Watch Later,
-  personalized home + continue-watching, Trending/History/Liked/Subscriptions
-  feed pages.
+- [x] **Phase 3 — History + feeds.** Watch history + resume + progress
+  reporting (sendBeacon), Watch Later toggle/list, personalized home +
+  continue-watching shelf, time-decayed Trending, and the History/Liked/
+  Watch Later/Subscriptions feed pages with resume bars + remove buttons.
 - [ ] **Phase 4 — Player polish.** Keyboard shortcuts, speed menu, PiP, theater
   mode, autoplay-next.
 

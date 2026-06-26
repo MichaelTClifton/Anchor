@@ -125,15 +125,24 @@ async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = vid
   io.observe(sentinel);
 }
 
-function videoCard(v, { side = false } = {}) {
+function videoCard(v, { side = false, remove = null } = {}) {
   const thumb = v.thumbnail
     ? `<img src="/thumbs/${esc(v.thumbnail)}" alt="" loading="lazy">`
     : '&#9875;';
   const duration = v.duration ? `<span class="duration">${formatDuration(v.duration)}</span>` : '';
+  const resume = (v.position && v.duration)
+    ? `<div class="resume-bar"><div style="width:${Math.min(100, 100 * v.position / v.duration)}%"></div></div>`
+    : '';
+  const wl = (ME && !remove)
+    ? `<button class="thumb-btn wl-btn" title="Save to Watch Later" aria-label="Save to Watch Later"
+        onclick="toggleWatchLater(event,'${esc(v.id)}')">&#128278;</button>` : '';
+  const rm = remove
+    ? `<button class="thumb-btn card-x" title="Remove" aria-label="Remove"
+        onclick="removeFromFeed(event,'${remove}','${esc(v.id)}')">&times;</button>` : '';
   const meta = `${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}`;
   if (side) {
     return `<a class="side-card" href="/watch/${esc(v.id)}">
-      <div class="thumb">${thumb}${duration}</div>
+      <div class="thumb">${thumb}${duration}${resume}</div>
       <div>
         <div class="title">${esc(v.title)}</div>
         <div class="meta">${esc(v.channel_name)}<br>${meta}</div>
@@ -141,12 +150,53 @@ function videoCard(v, { side = false } = {}) {
     </a>`;
   }
   return `<a class="card" href="/watch/${esc(v.id)}">
-    <div class="thumb">${thumb}${duration}</div>
+    <div class="thumb">${thumb}${duration}${resume}${wl}${rm}</div>
     <div class="info">
       <div class="title">${esc(v.title)}</div>
       <div class="meta">${esc(v.channel_name)} &middot; ${meta}</div>
     </div>
   </a>`;
+}
+
+// Toggle Watch Later from a card overlay button.
+async function toggleWatchLater(e, id) {
+  e.preventDefault(); e.stopPropagation();
+  if (!ME) return openAuthModal('login');
+  try {
+    const r = await api('/api/watch-later', { method: 'POST', json: { video_id: id } });
+    toast(r.in_watch_later ? 'Saved to Watch Later' : 'Removed from Watch Later');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Remove a card from a History or Watch Later feed.
+async function removeFromFeed(e, kind, id) {
+  e.preventDefault(); e.stopPropagation();
+  const url = kind === 'later'
+    ? `/api/watch-later/${encodeURIComponent(id)}`
+    : `/api/history/${encodeURIComponent(id)}`;
+  try {
+    await api(url, { method: 'DELETE' });
+    const card = e.target.closest('.card');
+    if (card) card.remove();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Standard single-feed page: sets heading, gates on auth if needed, mounts grid.
+function simpleFeedPage({ heading, endpoint, emptyMsg, auth = false, card = videoCard }) {
+  document.title = `${heading} - Anchor`;
+  document.addEventListener('auth-ready', () => {
+    const h = document.getElementById('page-heading');
+    if (h) h.textContent = heading;
+    if (auth && !ME) {
+      document.getElementById('grid').innerHTML =
+        `<div class="empty">Sign in to see this.<br><br>
+         <button class="primary" onclick="openAuthModal('login')">Sign in</button></div>`;
+      return;
+    }
+    mountFeed(cursor => api(endpoint + (cursor
+      ? (endpoint.includes('?') ? '&' : '?') + 'cursor=' + encodeURIComponent(cursor) : '')),
+      { emptyMsg, card });
+  }, { once: true });
 }
 
 // ---------- header ----------

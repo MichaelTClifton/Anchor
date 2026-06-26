@@ -287,8 +287,40 @@ app.get('/api/videos', (req, res) => {
   }
   if (category) return res.json(chronoFeed('v.category = ?', [category], cursor, limit));
   if (Number.isInteger(channel)) return res.json(chronoFeed('v.user_id = ?', [channel], cursor, limit));
+  const me = getUser(req);
+  if (me) return res.json(personalizedHome(me, cursor, limit));
   res.json(chronoFeed('', [], cursor, limit));
 });
+
+// Blend recency with subscription and tag-affinity boosts over a recent window;
+// offset-paginated so the ranking stays stable across pages.
+function personalizedHome(me, cursor, limit) {
+  const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
+  const subs = new Set(db.prepare('SELECT channel_id FROM subscriptions WHERE subscriber_id = ?')
+    .all(me.id).map(r => r.channel_id));
+  const tagWeight = new Map(db.prepare(`SELECT vt.tag_id, COUNT(*) AS c FROM watch_history h
+    JOIN video_tags vt ON vt.video_id = h.video_id WHERE h.user_id = ? GROUP BY vt.tag_id`)
+    .all(me.id).map(r => [r.tag_id, r.c]));
+  const finished = new Set(db.prepare('SELECT video_id FROM watch_history WHERE user_id = ? AND completed = 1')
+    .all(me.id).map(r => r.video_id));
+  const tagsOf = db.prepare('SELECT tag_id FROM video_tags WHERE video_id = ?');
+  const rows = db.prepare(`${VIDEO_SELECT} ORDER BY v.created_at DESC LIMIT 300`).all();
+  const now = Math.floor(Date.now() / 1000);
+  for (const r of rows) {
+    let score = 1 / ((now - r.created_at) / 86400 + 2);
+    if (subs.has(r.channel_id)) score += 3;
+    if (tagWeight.size) {
+      for (const { tag_id } of tagsOf.all(r.id)) {
+        if (tagWeight.has(tag_id)) score += Math.min(2, tagWeight.get(tag_id));
+      }
+    }
+    if (finished.has(r.id)) score -= 1;
+    r._score = score;
+  }
+  rows.sort((a, b) => b._score - a._score || b.created_at - a.created_at);
+  const page = rows.slice(offset, offset + limit).map(({ _score, ...v }) => v);
+  return { videos: page, nextCursor: offset + limit < rows.length ? encodeCursor({ o: offset + limit }) : null };
+}
 
 // Search-as-you-type suggestions (de-duplicated titles, most relevant first).
 app.get('/api/search/suggest', (req, res) => {
@@ -487,12 +519,139 @@ app.post('/api/channels/:id/subscribe', requireAuth, (req, res) => {
   res.json({ subscribed: !existing, subscribers });
 });
 
+// ---------- watch history & resume ----------
+
+app.post('/api/history', requireAuth, (req, res) => {
+  const videoId = String(req.body.video_id || '');
+  if (!db.prepare('SELECT 1 FROM videos WHERE id = ?').get(videoId)) {
+    return res.status(404).json({ error: 'Video not found.' });
+  }
+  const position = Math.max(0, parseFloat(req.body.position) || 0);
+  const duration = parseFloat(req.body.duration) || null;
+  const completed = duration && position >= 0.9 * duration ? 1 : 0;
+  db.prepare(`INSERT INTO watch_history (user_id, video_id, position, duration, completed, updated_at)
+    VALUES (?, ?, ?, ?, ?, unixepoch())
+    ON CONFLICT (user_id, video_id) DO UPDATE SET
+      position = excluded.position, duration = excluded.duration,
+      completed = excluded.completed, updated_at = excluded.updated_at`)
+    .run(req.user.id, videoId, position, duration, completed);
+  res.json({ ok: true });
+});
+
+app.get('/api/history', requireAuth, (req, res) => {
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+  const clauses = ['h.user_id = ?'];
+  const args = [req.user.id];
+  if (req.query.incomplete === '1') clauses.push('h.completed = 0 AND h.position > 5');
+  if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
+    clauses.push('(h.updated_at < ? OR (h.updated_at = ? AND v.id < ?))');
+    args.push(cursor.t, cursor.t, cursor.id);
+  }
+  args.push(limit + 1);
+  const rows = db.prepare(`SELECT ${VIDEO_COLS}, h.position, h.updated_at AS watched_at
+    FROM watch_history h JOIN videos v ON v.id = h.video_id JOIN users u ON u.id = v.user_id
+    WHERE ${clauses.join(' AND ')} ORDER BY h.updated_at DESC, v.id DESC LIMIT ?`).all(...args);
+  res.json(pageResult(rows, limit, last => ({ t: last.watched_at, id: last.id })));
+});
+
+app.delete('/api/history/:id', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM watch_history WHERE user_id = ? AND video_id = ?').run(req.user.id, req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- watch later ----------
+
+app.post('/api/watch-later', requireAuth, (req, res) => {
+  const videoId = String(req.body.video_id || '');
+  if (!db.prepare('SELECT 1 FROM videos WHERE id = ?').get(videoId)) {
+    return res.status(404).json({ error: 'Video not found.' });
+  }
+  const existing = db.prepare('SELECT 1 FROM watch_later WHERE user_id = ? AND video_id = ?')
+    .get(req.user.id, videoId);
+  if (existing) {
+    db.prepare('DELETE FROM watch_later WHERE user_id = ? AND video_id = ?').run(req.user.id, videoId);
+  } else {
+    db.prepare('INSERT INTO watch_later (user_id, video_id) VALUES (?, ?)').run(req.user.id, videoId);
+  }
+  res.json({ in_watch_later: !existing });
+});
+
+app.delete('/api/watch-later/:id', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM watch_later WHERE user_id = ? AND video_id = ?').run(req.user.id, req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/watch-later', requireAuth, (req, res) => {
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+  const clauses = ['w.user_id = ?'];
+  const args = [req.user.id];
+  if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
+    clauses.push('(w.created_at < ? OR (w.created_at = ? AND v.id < ?))');
+    args.push(cursor.t, cursor.t, cursor.id);
+  }
+  args.push(limit + 1);
+  const rows = db.prepare(`SELECT ${VIDEO_COLS}, w.created_at AS saved_at
+    FROM watch_later w JOIN videos v ON v.id = w.video_id JOIN users u ON u.id = v.user_id
+    WHERE ${clauses.join(' AND ')} ORDER BY w.created_at DESC, v.id DESC LIMIT ?`).all(...args);
+  res.json(pageResult(rows, limit, last => ({ t: last.saved_at, id: last.id })));
+});
+
+// ---------- liked & subscription feeds ----------
+
+app.get('/api/liked', requireAuth, (req, res) => {
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+  const clauses = ['l.user_id = ?', 'l.value = 1'];
+  const args = [req.user.id];
+  if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
+    clauses.push('(v.created_at < ? OR (v.created_at = ? AND v.id < ?))');
+    args.push(cursor.t, cursor.t, cursor.id);
+  }
+  args.push(limit + 1);
+  const rows = db.prepare(`SELECT ${VIDEO_COLS} FROM likes l
+    JOIN videos v ON v.id = l.video_id JOIN users u ON u.id = v.user_id
+    WHERE ${clauses.join(' AND ')} ORDER BY v.created_at DESC, v.id DESC LIMIT ?`).all(...args);
+  res.json(pageResult(rows, limit, last => ({ t: last.created_at, id: last.id })));
+});
+
+app.get('/api/feed/subscriptions', requireAuth, (req, res) => {
+  res.json(chronoFeed(
+    'v.user_id IN (SELECT channel_id FROM subscriptions WHERE subscriber_id = ?)',
+    [req.user.id], decodeCursor(req.query.cursor), clampLimit(req.query.limit)));
+});
+
+// ---------- trending (time-decayed popularity) ----------
+
+app.get('/api/trending', (req, res) => {
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+  const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
+  const now = Math.floor(Date.now() / 1000);
+  const rows = db.prepare(`SELECT ${VIDEO_COLS},
+      (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id AND l.value = 1) AS like_count,
+      (SELECT COUNT(*) FROM comments c WHERE c.video_id = v.id) AS comment_count
+    FROM videos v JOIN users u ON u.id = v.user_id
+    WHERE v.created_at > ?`).all(now - 60 * 60 * 24 * 30);
+  for (const r of rows) {
+    const ageHours = (now - r.created_at) / 3600;
+    r._score = (r.views + 3 * r.like_count + 2 * r.comment_count) / Math.pow(ageHours + 2, 1.5);
+  }
+  rows.sort((a, b) => b._score - a._score || b.created_at - a.created_at);
+  const page = rows.slice(offset, offset + limit).map(({ _score, ...v }) => v);
+  res.json({ videos: page, nextCursor: offset + limit < rows.length ? encodeCursor({ o: offset + limit }) : null });
+});
+
 // ---------- pretty page routes ----------
 
 app.get('/watch/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
 app.get('/channel/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
 app.get('/upload', (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
 app.get('/browse', (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));
+for (const page of ['trending', 'history', 'liked', 'later', 'subscriptions']) {
+  app.get('/' + page, (req, res) => res.sendFile(path.join(__dirname, 'public', `${page}.html`)));
+}
 
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {

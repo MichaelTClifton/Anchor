@@ -42,6 +42,19 @@
       document.getElementById('primary').innerHTML = `
         <video class="player" src="/media/${esc(v.filename)}" controls autoplay
           ${v.thumbnail ? `poster="/thumbs/${esc(v.thumbnail)}"` : ''}></video>
+        <div class="player-tools">
+          <label class="autoplay-toggle"><input type="checkbox" id="autoplay-next"> Autoplay next</label>
+          <span class="spacer"></span>
+          <label class="speed-ctl">Speed
+            <select id="speed" title="Playback speed (Shift+. / Shift+,)">
+              <option value="0.25">0.25&times;</option><option value="0.5">0.5&times;</option>
+              <option value="0.75">0.75&times;</option><option value="1" selected>Normal</option>
+              <option value="1.25">1.25&times;</option><option value="1.5">1.5&times;</option>
+              <option value="1.75">1.75&times;</option><option value="2">2&times;</option>
+            </select></label>
+          <button id="pip-btn" class="tool-btn" title="Mini-player (i)" hidden>&#10696; Mini-player</button>
+          <button id="theater-btn" class="tool-btn" title="Theater mode (t)">&#9645; Theater</button>
+        </div>
         <div class="watch-title">${esc(v.title)}</div>
         <div class="watch-bar">
           <div class="channel-row">
@@ -130,6 +143,86 @@
       };
 
       setupResumeAndProgress();
+      setupPlayerControls();
+    }
+
+    // Speed menu, theater mode, picture-in-picture, autoplay-next, keyboard shortcuts.
+    function setupPlayerControls() {
+      const player = document.querySelector('.player');
+      const layout = document.querySelector('.watch-layout');
+
+      // Speed
+      const speed = document.getElementById('speed');
+      speed.onchange = () => { player.playbackRate = parseFloat(speed.value); };
+
+      // Theater mode (persisted)
+      const theaterBtn = document.getElementById('theater-btn');
+      const applyTheater = on => {
+        layout.classList.toggle('theater', on);
+        theaterBtn.classList.toggle('active', on);
+      };
+      applyTheater(localStorage.getItem('theater') === '1');
+      theaterBtn.onclick = () => {
+        const on = !layout.classList.contains('theater');
+        localStorage.setItem('theater', on ? '1' : '0');
+        applyTheater(on);
+      };
+
+      // Picture-in-picture (only if supported)
+      const pipBtn = document.getElementById('pip-btn');
+      if (document.pictureInPictureEnabled) {
+        pipBtn.hidden = false;
+        pipBtn.onclick = async () => {
+          try {
+            if (document.pictureInPictureElement) await document.exitPictureInPicture();
+            else await player.requestPictureInPicture();
+          } catch (e) { toast('Picture-in-picture is unavailable here.', 'error'); }
+        };
+      }
+
+      // Autoplay-next (persisted, default on)
+      const autoplay = document.getElementById('autoplay-next');
+      autoplay.checked = localStorage.getItem('autoplay-next') !== '0';
+      autoplay.onchange = () => localStorage.setItem('autoplay-next', autoplay.checked ? '1' : '0');
+      player.addEventListener('ended', () => {
+        if (autoplay.checked && video.related && video.related.length) {
+          const next = video.related[0];
+          toast(`Up next: ${next.title}`);
+          setTimeout(() => { location.href = `/watch/${next.id}`; }, 800);
+        }
+      });
+
+      // Keyboard shortcuts (ignored while typing in a field)
+      document.addEventListener('keydown', e => {
+        const tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey) return;
+        const k = e.key;
+        // Clamp to [0, duration] once duration is known; before then allow the
+        // seek and let the browser clamp it.
+        const clamp = t => { const d = player.duration; return Math.max(0, d ? Math.min(d, t) : t); };
+        if (k === ' ' || k === 'k') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
+        else if (k === 'j') player.currentTime = clamp(player.currentTime - 10);
+        else if (k === 'l') player.currentTime = clamp(player.currentTime + 10);
+        else if (k === 'ArrowLeft') { e.preventDefault(); player.currentTime = clamp(player.currentTime - 5); }
+        else if (k === 'ArrowRight') { e.preventDefault(); player.currentTime = clamp(player.currentTime + 5); }
+        else if (k === 'ArrowUp') { e.preventDefault(); player.volume = Math.min(1, player.volume + 0.1); }
+        else if (k === 'ArrowDown') { e.preventDefault(); player.volume = Math.max(0, player.volume - 0.1); }
+        else if (k === 'm') player.muted = !player.muted;
+        else if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else player.requestFullscreen?.(); }
+        else if (k === 't') theaterBtn.click();
+        else if (k === 'i' && !pipBtn.hidden) pipBtn.click();
+        else if (k >= '0' && k <= '9') player.currentTime = clamp((player.duration || 0) * Number(k) / 10);
+        else if (k === '>' || (k === '.' && e.shiftKey)) bumpSpeed(speed, +1);
+        else if (k === '<' || (k === ',' && e.shiftKey)) bumpSpeed(speed, -1);
+        else return;
+      });
+    }
+
+    function bumpSpeed(speed, dir) {
+      const i = Math.max(0, Math.min(speed.options.length - 1, speed.selectedIndex + dir));
+      speed.selectedIndex = i;
+      speed.onchange();
+      toast(`Speed ${speed.value}×`);
     }
 
     // Resume from the saved position and report progress back periodically.

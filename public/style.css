@@ -387,6 +387,8 @@ main { flex: 1; min-width: 0; padding: 24px; }
 
 .watch-layout { display: grid; grid-template-columns: 1fr 360px; gap: 24px; }
 @media (max-width: 1000px) { .watch-layout { grid-template-columns: 1fr; } }
+/* Theater mode: player spans full width, related list drops below it. */
+.watch-layout.theater { grid-template-columns: 1fr; }
 
 .player {
   width: 100%;
@@ -394,6 +396,21 @@ main { flex: 1; min-width: 0; padding: 24px; }
   background: #000;
   border-radius: 12px;
 }
+.theater .player { max-height: 82vh; aspect-ratio: auto; height: 82vh; border-radius: 0; }
+
+.player-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.player-tools .spacer { flex: 1; }
+.player-tools label { color: var(--text-dim); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.player-tools select { padding: 6px 10px; }
+.tool-btn { background: var(--bg-hover); padding: 7px 12px; font-size: 13px; }
+.tool-btn.active { background: var(--accent); color: #0f0f0f; font-weight: 600; }
+.autoplay-toggle input { width: auto; }
 
 .watch-title { font-size: 20px; font-weight: 700; margin: 14px 0 8px; }
 

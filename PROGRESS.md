@@ -15,8 +15,11 @@ incrementally to `claude/video-hosting-site-32royz`.
   reporting (sendBeacon), Watch Later toggle/list, personalized home +
   continue-watching shelf, time-decayed Trending, and the History/Liked/
   Watch Later/Subscriptions feed pages with resume bars + remove buttons.
-- [ ] **Phase 4 — Player polish.** Keyboard shortcuts, speed menu, PiP, theater
-  mode, autoplay-next.
+- [x] **Phase 4 — Player polish.** Keyboard shortcuts (space/k, j/l, arrows,
+  m, f, 0-9, </> speed), speed menu, picture-in-picture (feature-detected),
+  persisted theater mode, and autoplay-next from the related queue.
+
+**All phases complete.** ✅
 
 ## Resume notes for the next session
 - App: Node/Express + better-sqlite3, vanilla frontend in `public/`, no build.

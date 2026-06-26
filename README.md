@@ -7,16 +7,26 @@ comments — all backed by a single Node.js server and a SQLite database.
 ## Features
 
 - **Accounts** — register/sign in (scrypt-hashed passwords, cookie sessions)
-- **Uploads** — drag-and-drop MP4/WebM/OGG/MOV up to 1 GB, with a live progress bar
+- **Uploads** — drag-and-drop MP4/WebM/OGG/MOV up to 1 GB, with a live progress
+  bar, tags, and categories
 - **Thumbnails** — auto-captured in the browser from the video itself (no ffmpeg required)
 - **Transcoding** — when ffmpeg is installed, uploads are encoded in the background
   into 1080p/720p/480p/360p H.264 renditions (never upscaled), with a quality
   selector on the watch page; without ffmpeg, videos simply play in their original format
-- **Playback** — HTML5 player with seeking (HTTP Range requests) and view counts
-- **Engagement** — likes/dislikes, threaded comment section, delete-your-own moderation
+- **Player** — HTML5 playback with seeking (HTTP Range), a quality + speed menu,
+  picture-in-picture, theater mode, autoplay-next, resume-where-you-left-off, and
+  keyboard shortcuts (`space`/`k`, `j`/`l`, arrows, `m`, `f`, `0`–`9`, `<`/`>`)
+- **Search** — full-text search with SQLite FTS5 (BM25 relevance, prefix matching)
+  and search-as-you-type autocomplete
+- **Recommendations** — tag-based related videos, a personalized home feed
+  (subscriptions + watch-history affinity), and a time-decayed Trending feed
+- **Engagement** — likes/dislikes, comments, subscriptions, Watch Later, and a
+  watch history with a "continue watching" shelf
+- **Navigation** — left sidebar (Home, Trending, Subscriptions, History, Liked,
+  Watch Later), category browsing, and infinite scroll across every feed
+- **UI** — responsive layout with a mobile drawer, a persisted light/dark theme
+  toggle, loading skeletons, toast notifications, and keyboard/focus accessibility
 - **Channels** — per-user channel pages with stats, plus subscribe/unsubscribe
-- **Search** — full search across titles, descriptions and channel names
-- **Home feed** — responsive grid of the latest uploads with durations and view counts
 
 ## Getting started
 

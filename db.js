@@ -127,6 +127,9 @@ if (!videoColumns.some(c => c.name === 'status')) {
 if (!videoColumns.some(c => c.name === 'category')) {
   db.exec('ALTER TABLE videos ADD COLUMN category TEXT');
 }
+if (!videoColumns.some(c => c.name === 'is_short')) {
+  db.exec('ALTER TABLE videos ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0');
+}
 
 // Rebuild a single video's FTS row from the source tables. The only writer of
 // videos_fts inserts; every mutation (upload, edit, tag change) routes here.

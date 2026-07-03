@@ -129,7 +129,10 @@ function videoCard(v, { side = false, remove = null } = {}) {
   const thumb = v.thumbnail
     ? `<img src="/thumbs/${esc(v.thumbnail)}" alt="" loading="lazy">`
     : '&#9875;';
-  const duration = v.duration ? `<span class="duration">${formatDuration(v.duration)}</span>` : '';
+  const duration = v.is_short
+    ? '<span class="duration short-badge">&#9889; SHORT</span>'
+    : (v.duration ? `<span class="duration">${formatDuration(v.duration)}</span>` : '');
+  const href = v.is_short ? `/shorts/${esc(v.id)}` : `/watch/${esc(v.id)}`;
   const resume = (v.position && v.duration)
     ? `<div class="resume-bar"><div style="width:${Math.min(100, 100 * v.position / v.duration)}%"></div></div>`
     : '';
@@ -141,7 +144,7 @@ function videoCard(v, { side = false, remove = null } = {}) {
         onclick="removeFromFeed(event,'${remove}','${esc(v.id)}')">&times;</button>` : '';
   const meta = `${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}`;
   if (side) {
-    return `<a class="side-card" href="/watch/${esc(v.id)}">
+    return `<a class="side-card" href="${href}">
       <div class="thumb">${thumb}${duration}${resume}</div>
       <div>
         <div class="title">${esc(v.title)}</div>
@@ -149,11 +152,25 @@ function videoCard(v, { side = false, remove = null } = {}) {
       </div>
     </a>`;
   }
-  return `<a class="card" href="/watch/${esc(v.id)}">
+  return `<a class="card" href="${href}">
     <div class="thumb">${thumb}${duration}${resume}${wl}${rm}</div>
     <div class="info">
       <div class="title">${esc(v.title)}</div>
       <div class="meta">${esc(v.channel_name)} &middot; ${meta}</div>
+    </div>
+  </a>`;
+}
+
+// Vertical 9:16 card used by the Shorts shelf on the home page.
+function shortCard(v) {
+  const thumb = v.thumbnail
+    ? `<img src="/thumbs/${esc(v.thumbnail)}" alt="" loading="lazy">`
+    : '&#9889;';
+  return `<a class="card short-card" href="/shorts/${esc(v.id)}">
+    <div class="thumb">${thumb}</div>
+    <div class="info">
+      <div class="title">${esc(v.title)}</div>
+      <div class="meta">${formatViews(v.views)} views</div>
     </div>
   </a>`;
 }
@@ -228,7 +245,8 @@ function renderHeader() {
 // ---------- sidebar ----------
 
 const SIDEBAR_SECTIONS = [
-  [['/', '\u{1F3E0}', 'Home'], ['/trending', '\u{1F525}', 'Trending'], ['/browse', '\u{1F5C2}', 'Browse']],
+  [['/', '\u{1F3E0}', 'Home'], ['/shorts', '⚡', 'Shorts'],
+   ['/trending', '\u{1F525}', 'Trending'], ['/browse', '\u{1F5C2}', 'Browse']],
   [['/subscriptions', '\u{1F4FA}', 'Subscriptions'], ['/history', '\u{1F553}', 'History'],
    ['/liked', '\u{1F44D}', 'Liked'], ['/later', '\u{1F516}', 'Watch Later']],
 ];

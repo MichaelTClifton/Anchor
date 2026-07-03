@@ -32,6 +32,10 @@
             </select></div>
           <div class="field"><label for="tags">Tags (comma-separated, up to 5)</label>
             <input id="tags" placeholder="e.g. music, piano, tutorial" maxlength="120"></div>
+          <div class="field" id="short-field" hidden>
+            <label class="check-row"><input type="checkbox" id="is-short" checked>
+              <span>&#9889; Publish as a <b>Short</b> &mdash; this clip is under a minute and
+              vertical, so it can appear in the swipeable Shorts feed</span></label></div>
           <div class="field"><label>Thumbnail (auto-captured from your video)</label>
             <img class="thumb-preview" id="thumb-preview" alt="" hidden>
             <span id="thumb-note" style="color:var(--text-dim);font-size:13px"></span></div>
@@ -95,6 +99,10 @@
       video.onerror = fail;
       video.onloadedmetadata = () => {
         duration = video.duration;
+        // A short clip in portrait (or square) qualifies as a Short.
+        const eligible = duration && duration <= 60 && video.videoHeight >= video.videoWidth;
+        document.getElementById('short-field').hidden = !eligible;
+        document.getElementById('is-short').checked = !!eligible;
         video.currentTime = Math.min(video.duration * 0.1, 5) || 0;
       };
       video.onseeked = () => {
@@ -135,6 +143,9 @@
       form.append('description', document.getElementById('description').value);
       form.append('category', document.getElementById('category').value);
       form.append('tags', document.getElementById('tags').value);
+      if (!document.getElementById('short-field').hidden && document.getElementById('is-short').checked) {
+        form.append('is_short', '1');
+      }
       if (duration) form.append('duration', duration);
       if (thumbBlob) form.append('thumbnail', thumbBlob, 'thumb.jpg');
       form.append('video', file);

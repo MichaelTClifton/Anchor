@@ -84,6 +84,10 @@ async function processVideo(id) {
 
   if (info.duration) {
     db.prepare('UPDATE videos SET duration = ? WHERE id = ?').run(info.duration, id);
+    // The Short flag came from client-reported metadata; ffprobe is the truth.
+    if (video.is_short && info.duration > 62) {
+      db.prepare('UPDATE videos SET is_short = 0 WHERE id = ?').run(id);
+    }
   }
 
   // Server-side thumbnail, for uploads where the browser couldn't capture one.

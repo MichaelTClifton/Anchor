@@ -19,6 +19,14 @@ incrementally to `claude/video-hosting-site-32royz`.
   m, f, 0-9, </> speed), speed menu, picture-in-picture (feature-detected),
   persisted theater mode, and autoplay-next from the related queue.
 
+- [x] **Phase 5 — Shorts.** `is_short` column (auto-detected at upload from
+  duration ≤ 60s + portrait/square, server-validated, ffprobe-corrected);
+  `/api/shorts` time-decayed engagement feed + `POST /api/videos/:id/view`;
+  shorts excluded from long-form discovery grids but kept in search/channel/
+  library lists with a badge; `/shorts[/:id]` vertical snap-scroll player
+  (autoplay-in-view, loop, like/mute/share rail, keyboard nav, infinite feed,
+  URL sync); Shorts shelf on home + sidebar link.
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

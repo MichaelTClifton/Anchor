@@ -10,6 +10,7 @@
 <body>
   <main>
     <div id="continue-row"></div>
+    <div id="shorts-row"></div>
     <div id="results-heading"></div>
     <div class="grid" id="grid"></div>
   </main>
@@ -21,6 +22,17 @@
         `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
       document.title = `${q} - Anchor`;
     } else {
+      // Shorts shelf (shorts are excluded from the main grid).
+      (async () => {
+        try {
+          const { videos } = await api('/api/shorts?limit=12');
+          if (videos.length) {
+            document.getElementById('shorts-row').innerHTML =
+              `<h2><a href="/shorts">&#9889; Shorts</a></h2>
+               <div class="row shorts-shelf">${videos.map(shortCard).join('')}</div>`;
+          }
+        } catch (e) { /* shelf is optional */ }
+      })();
       // Continue-watching shelf for signed-in viewers.
       document.addEventListener('auth-ready', async () => {
         if (!ME) return;

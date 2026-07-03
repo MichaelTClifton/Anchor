@@ -13,6 +13,10 @@ comments — all backed by a single Node.js server and a SQLite database.
 - **Transcoding** — when ffmpeg is installed, uploads are encoded in the background
   into 1080p/720p/480p/360p H.264 renditions (never upscaled), with a quality
   selector on the watch page; without ffmpeg, videos simply play in their original format
+- **Shorts** — vertical clips under a minute are auto-detected at upload and get
+  their own swipeable full-screen feed (`/shorts`) with snap scrolling,
+  autoplay-in-view, looping, like/share actions, and keyboard navigation, plus
+  a Shorts shelf on the home page
 - **Player** — HTML5 playback with seeking (HTTP Range), a quality + speed menu,
   picture-in-picture, theater mode, autoplay-next, resume-where-you-left-off, and
   keyboard shortcuts (`space`/`k`, `j`/`l`, arrows, `m`, `f`, `0`–`9`, `<`/`>`)

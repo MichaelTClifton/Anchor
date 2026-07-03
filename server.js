@@ -137,9 +137,11 @@ app.post('/api/videos', requireAuth,
     const id = crypto.randomBytes(6).toString('base64url');
     const duration = parseFloat(req.body.duration);
     const category = CATEGORIES.includes(req.body.category) ? req.body.category : null;
+    // Shorts must actually be short; the transcoder re-checks against ffprobe.
+    const isShort = req.body.is_short === '1' && Number.isFinite(duration) && duration <= 61 ? 1 : 0;
     db.prepare(`
-      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration, status, category)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO videos (id, user_id, title, description, filename, thumbnail, duration, status, category, is_short)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, req.user.id, title,
       String(req.body.description || '').trim().slice(0, 5000),
@@ -148,6 +150,7 @@ app.post('/api/videos', requireAuth,
       Number.isFinite(duration) ? duration : null,
       transcode.available ? 'processing' : 'ready',
       category,
+      isShort,
     );
     setTags(id, req.body.tags); // also writes the search-index row
     transcode.enqueue(id);
@@ -157,7 +160,7 @@ app.post('/api/videos', requireAuth,
 // ---------- video listing / detail ----------
 
 const VIDEO_COLS = `v.id, v.title, v.description, v.filename, v.thumbnail, v.duration,
-         v.views, v.created_at, v.status, v.category,
+         v.views, v.created_at, v.status, v.category, v.is_short,
          u.id AS channel_id, u.username AS channel_name`;
 const VIDEO_SELECT = `SELECT ${VIDEO_COLS} FROM videos v JOIN users u ON u.id = v.user_id`;
 
@@ -243,19 +246,20 @@ function tagsForVideo(videoId) {
 }
 
 // Tag-based related videos, topped up to 12 with popular videos as a fallback.
+// Shorts are excluded so the watch sidebar / autoplay queue stays long-form.
 function relatedVideos(videoId) {
   const out = db.prepare(`SELECT ${VIDEO_COLS}, COUNT(vt2.tag_id) AS shared
     FROM video_tags vt1
     JOIN video_tags vt2 ON vt2.tag_id = vt1.tag_id AND vt2.video_id <> vt1.video_id
     JOIN videos v ON v.id = vt2.video_id
     JOIN users u ON u.id = v.user_id
-    WHERE vt1.video_id = ?
+    WHERE vt1.video_id = ? AND v.is_short = 0
     GROUP BY v.id
     ORDER BY shared DESC, v.views DESC, v.created_at DESC
     LIMIT 12`).all(videoId);
   if (out.length < 12) {
     const have = new Set([videoId, ...out.map(v => v.id)]);
-    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ?
+    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ? AND v.is_short = 0
       ORDER BY v.views DESC, v.created_at DESC LIMIT 40`).all(videoId);
     for (const f of fillers) {
       if (out.length >= 12) break;
@@ -285,11 +289,13 @@ app.get('/api/videos', (req, res) => {
       LIMIT ? OFFSET ?`).all(match, limit + 1, offset);
     return res.json(pageResult(rows, limit, () => ({ o: offset + limit })));
   }
-  if (category) return res.json(chronoFeed('v.category = ?', [category], cursor, limit));
+  // Discovery grids stay long-form; shorts live in their own feed (but still
+  // show up in search, channel pages and the user's own lists).
+  if (category) return res.json(chronoFeed('v.category = ? AND v.is_short = 0', [category], cursor, limit));
   if (Number.isInteger(channel)) return res.json(chronoFeed('v.user_id = ?', [channel], cursor, limit));
   const me = getUser(req);
   if (me) return res.json(personalizedHome(me, cursor, limit));
-  res.json(chronoFeed('', [], cursor, limit));
+  res.json(chronoFeed('v.is_short = 0', [], cursor, limit));
 });
 
 // Blend recency with subscription and tag-affinity boosts over a recent window;
@@ -304,7 +310,7 @@ function personalizedHome(me, cursor, limit) {
   const finished = new Set(db.prepare('SELECT video_id FROM watch_history WHERE user_id = ? AND completed = 1')
     .all(me.id).map(r => r.video_id));
   const tagsOf = db.prepare('SELECT tag_id FROM video_tags WHERE video_id = ?');
-  const rows = db.prepare(`${VIDEO_SELECT} ORDER BY v.created_at DESC LIMIT 300`).all();
+  const rows = db.prepare(`${VIDEO_SELECT} WHERE v.is_short = 0 ORDER BY v.created_at DESC LIMIT 300`).all();
   const now = Math.floor(Date.now() / 1000);
   for (const r of rows) {
     let score = 1 / ((now - r.created_at) / 86400 + 2);
@@ -618,7 +624,7 @@ app.get('/api/liked', requireAuth, (req, res) => {
 
 app.get('/api/feed/subscriptions', requireAuth, (req, res) => {
   res.json(chronoFeed(
-    'v.user_id IN (SELECT channel_id FROM subscriptions WHERE subscriber_id = ?)',
+    'v.is_short = 0 AND v.user_id IN (SELECT channel_id FROM subscriptions WHERE subscriber_id = ?)',
     [req.user.id], decodeCursor(req.query.cursor), clampLimit(req.query.limit)));
 });
 
@@ -633,7 +639,7 @@ app.get('/api/trending', (req, res) => {
       (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id AND l.value = 1) AS like_count,
       (SELECT COUNT(*) FROM comments c WHERE c.video_id = v.id) AS comment_count
     FROM videos v JOIN users u ON u.id = v.user_id
-    WHERE v.created_at > ?`).all(now - 60 * 60 * 24 * 30);
+    WHERE v.created_at > ? AND v.is_short = 0`).all(now - 60 * 60 * 24 * 30);
   for (const r of rows) {
     const ageHours = (now - r.created_at) / 3600;
     r._score = (r.views + 3 * r.like_count + 2 * r.comment_count) / Math.pow(ageHours + 2, 1.5);
@@ -643,9 +649,52 @@ app.get('/api/trending', (req, res) => {
   res.json({ videos: page, nextCursor: offset + limit < rows.length ? encodeCursor({ o: offset + limit }) : null });
 });
 
+// ---------- shorts ----------
+
+// The swipe feed: every short, ranked by time-decayed engagement (no window,
+// so the catalogue is always reachable — decay sinks old ones naturally).
+// ?start=<id> pins that short to the front of the first page.
+app.get('/api/shorts', (req, res) => {
+  const limit = clampLimit(req.query.limit);
+  const cursor = decodeCursor(req.query.cursor);
+  const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
+  const start = String(req.query.start || '');
+  const me = getUser(req);
+  const now = Math.floor(Date.now() / 1000);
+  const rows = db.prepare(`SELECT ${VIDEO_COLS},
+      (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id AND l.value = 1) AS like_count,
+      (SELECT COUNT(*) FROM comments c WHERE c.video_id = v.id) AS comment_count
+    FROM videos v JOIN users u ON u.id = v.user_id
+    WHERE v.is_short = 1`).all();
+  for (const r of rows) {
+    const ageHours = (now - r.created_at) / 3600;
+    r._score = (r.views + 3 * r.like_count + 2 * r.comment_count) / Math.pow(ageHours + 2, 1.5);
+  }
+  rows.sort((a, b) => b._score - a._score || b.created_at - a.created_at);
+  if (start) {
+    const i = rows.findIndex(r => r.id === start);
+    if (i > 0) rows.unshift(rows.splice(i, 1)[0]);
+  }
+  const myLike = me ? db.prepare('SELECT value FROM likes WHERE user_id = ? AND video_id = ?') : null;
+  const page = rows.slice(offset, offset + limit).map(({ _score, ...v }) => ({
+    ...v, my_like: myLike ? ((myLike.get(me.id, v.id) || {}).value || 0) : 0,
+  }));
+  res.json({ videos: page, nextCursor: offset + limit < rows.length ? encodeCursor({ o: offset + limit }) : null });
+});
+
+// The shorts player never hits GET /api/videos/:id (which is what counts a
+// view elsewhere), so it reports views here once a short actually plays.
+app.post('/api/videos/:id/view', (req, res) => {
+  const info = db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'Video not found.' });
+  res.json({ ok: true });
+});
+
 // ---------- pretty page routes ----------
 
 app.get('/watch/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
+app.get('/shorts', (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
+app.get('/shorts/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
 app.get('/channel/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
 app.get('/upload', (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
 app.get('/browse', (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));

@@ -6,7 +6,12 @@ comments — all backed by a single Node.js server and a SQLite database.
 
 ## Features
 
-- **Accounts** — register/sign in (scrypt-hashed passwords, cookie sessions)
+- **Members-only** — signed-out visitors see a landing page about the platform;
+  all videos, feeds and media require an account
+- **Accounts** — register with username + email + confirmed password
+  (scrypt-hashed, cookie sessions), passkey (WebAuthn) sign-in, optional TOTP
+  two-factor authentication, email-based password recovery, and a settings page
+  for managing email, password, passkeys and 2FA
 - **Uploads** — drag-and-drop MP4/WebM/OGG/MOV up to 1 GB, with a live progress
   bar, tags, and categories
 - **Thumbnails** — auto-captured in the browser from the video itself (no ffmpeg required)
@@ -43,6 +48,11 @@ Then open http://localhost:3000, create an account, and upload your first video.
 
 Uploaded media and the SQLite database live in `data/` (gitignored). Set `PORT`
 to change the listening port.
+
+Password-reset "emails" are written to `data/outbox/` (and logged) in
+development — swap `sendMail()` in `auth.js` for a real SMTP sender in
+production. Passkeys require a secure context: they work on `localhost` in
+development and need HTTPS when deployed.
 
 To enable the transcoding pipeline, install ffmpeg (e.g. `apt-get install ffmpeg`)
 and restart the server — it detects ffmpeg at startup and logs whether

@@ -219,6 +219,17 @@ function simpleFeedPage({ heading, endpoint, emptyMsg, auth = false, card = vide
 // ---------- header ----------
 
 function renderHeader() {
+  // The splash and reset pages get a minimal header: logo + sign in.
+  if (document.body.classList.contains('splash-page')) {
+    document.body.insertAdjacentHTML('afterbegin', `
+      <header class="splash-header">
+        <a class="logo" href="/"><span class="mark">&#9875;</span> Anchor</a>
+        <div class="header-actions">
+          <button class="primary" onclick="openAuthModal('login')">Sign in</button>
+        </div>
+      </header>`);
+    return;
+  }
   const q = new URLSearchParams(location.search).get('q') || '';
   document.body.insertAdjacentHTML('afterbegin', `
     <header>
@@ -358,6 +369,7 @@ async function refreshHeaderActions() {
     el.innerHTML = `
       <button class="primary" onclick="location.href='/upload'">+ Upload</button>
       <a class="me" href="/channel/${ME.id}">&#9875; <b>${esc(ME.username)}</b></a>
+      <a class="icon-btn" href="/settings" title="Account settings" aria-label="Account settings">&#9881;</a>
       <button id="logout-btn">Sign out</button>
     `;
     el.querySelector('#logout-btn').onclick = async () => {
@@ -371,51 +383,271 @@ async function refreshHeaderActions() {
   document.dispatchEvent(new CustomEvent('auth-ready'));
 }
 
+// ---------- passkeys (WebAuthn client side) ----------
+
+function b64uToBuf(s) {
+  return Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+}
+function bufToB64u(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function passkeysSupported() {
+  return !!(window.PublicKeyCredential && navigator.credentials);
+}
+
+// Register a new passkey for the signed-in user.
+async function createPasskey(name) {
+  if (!passkeysSupported()) throw new Error('This browser does not support passkeys.');
+  const { ticket, options } = await api('/api/passkeys/register/options', { method: 'POST', json: {} });
+  options.challenge = b64uToBuf(options.challenge);
+  options.user.id = b64uToBuf(options.user.id);
+  options.excludeCredentials = (options.excludeCredentials || [])
+    .map(c => ({ ...c, id: b64uToBuf(c.id) }));
+  const cred = await navigator.credentials.create({ publicKey: options });
+  await api('/api/passkeys/register/verify', {
+    method: 'POST',
+    json: {
+      ticket, name,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+    },
+  });
+}
+
+// Sign in with any passkey the browser holds for this site.
+async function passkeySignIn() {
+  if (!passkeysSupported()) throw new Error('This browser does not support passkeys.');
+  const { ticket, options } = await api('/api/passkeys/login/options', { method: 'POST', json: {} });
+  options.challenge = b64uToBuf(options.challenge);
+  const cred = await navigator.credentials.get({ publicKey: options });
+  await api('/api/passkeys/login/verify', {
+    method: 'POST',
+    json: {
+      ticket, id: cred.id,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        authenticatorData: bufToB64u(cred.response.authenticatorData),
+        signature: bufToB64u(cred.response.signature),
+      },
+    },
+  });
+  location.reload();
+}
+
 // ---------- auth modal ----------
+// One modal, several views: sign in -> (2FA code) / forgot password,
+// register -> secure-your-account (passkey + 2FA setup).
 
 function openAuthModal(mode) {
   closeAuthModal();
-  const isLogin = mode === 'login';
-  document.body.insertAdjacentHTML('beforeend', `
-    <div class="modal-backdrop" id="auth-modal">
-      <div class="modal">
-        <h2>${isLogin ? 'Sign in to Anchor' : 'Create your account'}</h2>
-        <form id="auth-form">
-          <div class="field"><label>Username</label>
-            <input name="username" required autocomplete="username" autofocus></div>
-          <div class="field"><label>Password</label>
-            <input name="password" type="password" required
-              autocomplete="${isLogin ? 'current-password' : 'new-password'}"></div>
-          <button class="primary" style="width:100%">${isLogin ? 'Sign in' : 'Register'}</button>
-          <div class="error-msg" id="auth-error"></div>
-        </form>
-        <div class="switch">${isLogin
-          ? `New here? <a onclick="openAuthModal('register')">Create an account</a>`
-          : `Already have an account? <a onclick="openAuthModal('login')">Sign in</a>`}
-        </div>
-      </div>
-    </div>
-  `);
+  document.body.insertAdjacentHTML('beforeend',
+    '<div class="modal-backdrop" id="auth-modal"><div class="modal" id="auth-box"></div></div>');
   const backdrop = document.getElementById('auth-modal');
   backdrop.addEventListener('click', e => { if (e.target === backdrop) closeAuthModal(); });
-  document.getElementById('auth-form').onsubmit = async e => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    try {
-      await api(isLogin ? '/api/login' : '/api/register', {
-        method: 'POST',
-        json: { username: form.get('username'), password: form.get('password') },
-      });
-      location.reload();
-    } catch (err) {
-      document.getElementById('auth-error').textContent = err.message;
-    }
-  };
+  (mode === 'register' ? registerView : loginView)(document.getElementById('auth-box'));
 }
 
 function closeAuthModal() {
   const el = document.getElementById('auth-modal');
   if (el) el.remove();
+}
+
+function authError(box, msg) {
+  const el = box.querySelector('#auth-error');
+  if (el) el.textContent = msg;
+}
+
+function loginView(box) {
+  box.innerHTML = `
+    <h2>Sign in to Anchor</h2>
+    <form id="auth-form">
+      <div class="field"><label>Username</label>
+        <input name="username" required autocomplete="username" autofocus></div>
+      <div class="field"><label>Password</label>
+        <input name="password" type="password" required autocomplete="current-password"></div>
+      <button class="primary" style="width:100%">Sign in</button>
+      <div class="error-msg" id="auth-error"></div>
+    </form>
+    <div class="auth-alt">
+      <a id="forgot-link" class="linkish">Forgot password?</a>
+      ${passkeysSupported()
+        ? '<button type="button" id="passkey-signin">&#128273; Sign in with a passkey</button>' : ''}
+    </div>
+    <div class="switch">New here? <a id="to-register">Create an account</a></div>`;
+  box.querySelector('#to-register').onclick = () => registerView(box);
+  box.querySelector('#forgot-link').onclick = () => forgotView(box);
+  const pk = box.querySelector('#passkey-signin');
+  if (pk) pk.onclick = async () => {
+    try { await passkeySignIn(); }
+    catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') authError(box, e.message); }
+  };
+  box.querySelector('#auth-form').onsubmit = async e => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    try {
+      const r = await api('/api/login', {
+        method: 'POST',
+        json: { username: form.get('username'), password: form.get('password') },
+      });
+      if (r.totp_required) return totpLoginView(box, r.ticket);
+      location.reload();
+    } catch (err) { authError(box, err.message); }
+  };
+}
+
+function totpLoginView(box, ticket) {
+  box.innerHTML = `
+    <h2>Two-factor authentication</h2>
+    <p class="modal-note">Enter the 6-digit code from your authenticator app.</p>
+    <form id="auth-form">
+      <div class="field"><label>Authentication code</label>
+        <input name="code" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+          autocomplete="one-time-code" autofocus></div>
+      <button class="primary" style="width:100%">Verify</button>
+      <div class="error-msg" id="auth-error"></div>
+    </form>
+    <div class="switch"><a id="back-login">Back to sign in</a></div>`;
+  box.querySelector('#back-login').onclick = () => loginView(box);
+  box.querySelector('#auth-form').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api('/api/login/totp', {
+        method: 'POST',
+        json: { ticket, code: new FormData(e.target).get('code') },
+      });
+      location.reload();
+    } catch (err) { authError(box, err.message); }
+  };
+}
+
+function forgotView(box) {
+  box.innerHTML = `
+    <h2>Reset your password</h2>
+    <p class="modal-note">Enter your account's email address and we'll send a reset link.</p>
+    <form id="auth-form">
+      <div class="field"><label>Email</label>
+        <input name="email" type="email" required autocomplete="email" autofocus></div>
+      <button class="primary" style="width:100%">Send reset link</button>
+      <div class="error-msg" id="auth-error"></div>
+    </form>
+    <div class="switch"><a id="back-login">Back to sign in</a></div>`;
+  box.querySelector('#back-login').onclick = () => loginView(box);
+  box.querySelector('#auth-form').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api('/api/recover', {
+        method: 'POST', json: { email: new FormData(e.target).get('email') },
+      });
+      box.innerHTML = `
+        <h2>Check your email</h2>
+        <p class="modal-note">If an account exists for that address, a password reset link is on
+          its way. The link works for one hour.</p>
+        <div class="switch"><a id="back-login">Back to sign in</a></div>`;
+      box.querySelector('#back-login').onclick = () => loginView(box);
+    } catch (err) { authError(box, err.message); }
+  };
+}
+
+function registerView(box) {
+  box.innerHTML = `
+    <h2>Create your account</h2>
+    <form id="auth-form">
+      <div class="field"><label>Username</label>
+        <input name="username" required autocomplete="username" autofocus></div>
+      <div class="field"><label>Email (used for account recovery)</label>
+        <input name="email" type="email" required autocomplete="email"></div>
+      <div class="field"><label>Password (at least 8 characters)</label>
+        <input name="password" type="password" required minlength="8" autocomplete="new-password"></div>
+      <div class="field"><label>Confirm password</label>
+        <input name="password2" type="password" required minlength="8" autocomplete="new-password"></div>
+      <button class="primary" style="width:100%">Create account</button>
+      <div class="error-msg" id="auth-error"></div>
+    </form>
+    <div class="switch">Already have an account? <a id="to-login">Sign in</a></div>`;
+  box.querySelector('#to-login').onclick = () => loginView(box);
+  box.querySelector('#auth-form').onsubmit = async e => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    if (form.get('password') !== form.get('password2')) {
+      return authError(box, 'The two passwords do not match.');
+    }
+    try {
+      await api('/api/register', {
+        method: 'POST',
+        json: {
+          username: form.get('username'), email: form.get('email'),
+          password: form.get('password'), password2: form.get('password2'),
+        },
+      });
+      securityView(box);
+    } catch (err) { authError(box, err.message); }
+  };
+}
+
+// Post-signup step: offer a passkey and 2FA before entering the site.
+function securityView(box) {
+  box.innerHTML = `
+    <h2>Secure your account</h2>
+    <p class="modal-note">Recommended — both take under a minute, and you can also do this
+      later in Settings.</p>
+    <div class="security-options">
+      ${passkeysSupported()
+        ? `<button type="button" id="sec-passkey">&#128273; Add a passkey
+             <span class="sub">Sign in with your fingerprint, face or device PIN</span></button>`
+        : ''}
+      <button type="button" id="sec-2fa">&#128241; Enable two-factor authentication
+        <span class="sub">Require a code from an authenticator app to sign in</span></button>
+    </div>
+    <div class="error-msg" id="auth-error"></div>
+    <button class="primary" id="sec-done" style="width:100%;margin-top:14px">Continue to Anchor</button>`;
+  box.querySelector('#sec-done').onclick = () => location.reload();
+  const pk = box.querySelector('#sec-passkey');
+  if (pk) pk.onclick = async () => {
+    try {
+      await createPasskey('Passkey');
+      pk.disabled = true;
+      pk.innerHTML = '&#10003; Passkey added';
+      authError(box, '');
+    } catch (e) {
+      if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') authError(box, e.message);
+    }
+  };
+  box.querySelector('#sec-2fa').onclick = () => totpSetupView(box, () => securityView(box));
+}
+
+// Shared by the signup flow and the Settings page (via done callback).
+async function totpSetupView(box, done) {
+  let setup;
+  try { setup = await api('/api/2fa/setup', { method: 'POST', json: {} }); }
+  catch (e) { return toast(e.message, 'error'); }
+  box.innerHTML = `
+    <h2>Set up two-factor authentication</h2>
+    <p class="modal-note">Add this secret to an authenticator app (Google Authenticator, 1Password,
+      Aegis, ...), then enter the 6-digit code it shows.</p>
+    <div class="totp-secret"><code>${esc(setup.secret)}</code></div>
+    <p class="modal-note"><a href="${esc(setup.otpauth)}">Open in authenticator app</a></p>
+    <form id="auth-form">
+      <div class="field"><label>6-digit code</label>
+        <input name="code" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+          autocomplete="one-time-code" autofocus></div>
+      <button class="primary" style="width:100%">Turn on 2FA</button>
+      <div class="error-msg" id="auth-error"></div>
+    </form>
+    <div class="switch"><a id="totp-back">Back</a></div>`;
+  box.querySelector('#totp-back').onclick = done;
+  box.querySelector('#auth-form').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api('/api/2fa/enable', {
+        method: 'POST', json: { code: new FormData(e.target).get('code') },
+      });
+      toast('Two-factor authentication is on');
+      done();
+    } catch (err) { authError(box, err.message); }
+  };
 }
 
 renderHeader();

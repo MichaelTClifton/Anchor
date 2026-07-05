@@ -27,6 +27,14 @@ incrementally to `claude/video-hosting-site-32royz`.
   (autoplay-in-view, loop, like/mute/share rail, keyboard nav, infinite feed,
   URL sync); Shorts shelf on home + sidebar link.
 
+- [x] **Phase 6 — Auth hardening + splash gate.** Splash landing page for
+  signed-out visitors (all pages/API/media gated behind a session); signup
+  requires email + confirmed 8-char password with a post-signup
+  "secure your account" step; passkeys (hand-rolled WebAuthn: CBOR/COSE parse,
+  node:crypto verify); TOTP 2FA with two-step login; password recovery via
+  dev-outbox email + /reset page (single-use 1h tokens, sessions revoked);
+  /settings page (email, password, 2FA, passkeys); dropzone display:block fix.
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

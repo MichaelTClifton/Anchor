@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset password - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="splash-page">
+  <main class="splash">
+    <div class="panel reset-panel">
+      <h2>Choose a new password</h2>
+      <form id="reset-form">
+        <div class="field"><label>New password (at least 8 characters)</label>
+          <input name="password" type="password" required minlength="8" autocomplete="new-password" autofocus></div>
+        <div class="field"><label>Confirm new password</label>
+          <input name="password2" type="password" required minlength="8" autocomplete="new-password"></div>
+        <button class="primary" style="width:100%">Set new password</button>
+        <div class="error-msg" id="error"></div>
+      </form>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const form = document.getElementById('reset-form');
+    const panel = document.querySelector('.reset-panel');
+    if (!token) {
+      panel.innerHTML = `<h2>Invalid link</h2>
+        <p>This reset link is missing its token. Request a new one from the sign-in form.</p>`;
+    }
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const data = new FormData(form);
+      if (data.get('password') !== data.get('password2')) {
+        document.getElementById('error').textContent = 'The two passwords do not match.';
+        return;
+      }
+      try {
+        await api('/api/reset', {
+          method: 'POST',
+          json: { token, password: data.get('password'), password2: data.get('password2') },
+        });
+        panel.innerHTML = `<h2>Password updated</h2>
+          <p>You've been signed out everywhere. Sign in with your new password.</p>
+          <button class="primary" style="width:100%" onclick="openAuthModal('login')">Sign in</button>`;
+      } catch (err) {
+        document.getElementById('error').textContent = err.message;
+      }
+    };
+  </script>
+</body>
+</html>

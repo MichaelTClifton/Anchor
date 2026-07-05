@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { db, UPLOADS_DIR, THUMBS_DIR, reindexVideo } = require('./db');
 const transcode = require('./transcode');
+const authlib = require('./auth');
 
 const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
 
@@ -14,10 +15,25 @@ const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg', 'video/quic
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Resolve the viewer once per request. Signed-out visitors only ever reach
+// the splash and reset pages; every content page, API and media file needs a
+// session.
+app.use((req, res, next) => { req.user = getUser(req); next(); });
+const pageAuth = (req, res, next) => (req.user ? next() : res.redirect('/'));
+const staticAuth = (req, res, next) => (req.user ? next() : res.status(401).end());
+app.use((req, res, next) => {
+  if (!req.user && /\.html$/.test(req.path)
+      && !['/splash.html', '/reset.html'].includes(req.path)) {
+    return res.redirect('/');
+  }
+  next();
+});
+// index:false so "/" below can pick splash vs home by session.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 // express.static handles HTTP Range requests, so seeking in the player works.
-app.use('/media', express.static(UPLOADS_DIR));
-app.use('/thumbs', express.static(THUMBS_DIR));
+app.use('/media', staticAuth, express.static(UPLOADS_DIR));
+app.use('/thumbs', staticAuth, express.static(THUMBS_DIR));
 
 // ---------- auth helpers ----------
 
@@ -44,7 +60,6 @@ function getUser(req) {
 }
 
 function requireAuth(req, res, next) {
-  req.user = getUser(req);
   if (!req.user) return res.status(401).json({ error: 'You must be signed in to do that.' });
   next();
 }
@@ -53,20 +68,29 @@ function requireAuth(req, res, next) {
 
 app.post('/api/register', (req, res) => {
   const username = String(req.body.username || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
+  const password2 = String(req.body.password2 || '');
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     return res.status(400).json({ error: 'Username must be 3-20 characters: letters, numbers, underscores.' });
   }
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'A valid email address is required (used for account recovery).' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  }
+  if (password !== password2) {
+    return res.status(400).json({ error: 'The two passwords do not match.' });
   }
   try {
-    const info = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)')
-      .run(username, hashPassword(password));
+    const info = db.prepare('INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)')
+      .run(username, hashPassword(password), email);
     startSession(res, info.lastInsertRowid);
     res.json({ id: info.lastInsertRowid, username });
   } catch (e) {
-    res.status(409).json({ error: 'That username is taken.' });
+    const dup = db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+    res.status(409).json({ error: dup ? 'That username is taken.' : 'That email is already registered.' });
   }
 });
 
@@ -77,6 +101,29 @@ app.post('/api/login', (req, res) => {
   if (!user || !verifyPassword(password, user.password_hash)) {
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
+  if (user.totp_enabled) {
+    // Two-step sign-in: the password alone earns a short-lived ticket, not a
+    // session; the authenticator code redeems it below.
+    const ticket = authlib.putChallenge('totp-login', { userId: user.id, attempts: 0 });
+    return res.json({ totp_required: true, ticket });
+  }
+  startSession(res, user.id);
+  res.json({ id: user.id, username: user.username });
+});
+
+app.post('/api/login/totp', (req, res) => {
+  const ticket = req.body.ticket;
+  const data = authlib.peekChallenge('totp-login', ticket);
+  if (!data) return res.status(400).json({ error: 'Sign-in expired — start again.' });
+  if (++data.attempts > 5) {
+    authlib.dropChallenge(ticket);
+    return res.status(400).json({ error: 'Too many wrong codes — start again.' });
+  }
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(data.userId);
+  if (!user || !authlib.verifyTotp(user.totp_secret, req.body.code)) {
+    return res.status(401).json({ error: 'That code is not right. Try again.' });
+  }
+  authlib.dropChallenge(ticket);
   startSession(res, user.id);
   res.json({ id: user.id, username: user.username });
 });
@@ -98,6 +145,201 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/me', (req, res) => {
   res.json({ user: getUser(req) });
+});
+
+// ---------- passkeys (WebAuthn) ----------
+
+// rpId/origin are derived per request so dev (localhost) and production both
+// work without configuration.
+function rpInfo(req) {
+  return { rpId: req.hostname, origin: `${req.protocol}://${req.get('host')}` };
+}
+
+app.post('/api/passkeys/register/options', requireAuth, (req, res) => {
+  const challenge = crypto.randomBytes(32).toString('base64url');
+  const ticket = authlib.putChallenge('pk-reg', { userId: req.user.id, challenge });
+  const existing = db.prepare('SELECT id FROM passkeys WHERE user_id = ?').all(req.user.id);
+  res.json({
+    ticket,
+    options: {
+      challenge,
+      rp: { name: 'Anchor', id: rpInfo(req).rpId },
+      user: {
+        id: Buffer.from(String(req.user.id)).toString('base64url'),
+        name: req.user.username,
+        displayName: req.user.username,
+      },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      excludeCredentials: existing.map(p => ({ type: 'public-key', id: p.id })),
+      authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+      timeout: 60000,
+    },
+  });
+});
+
+app.post('/api/passkeys/register/verify', requireAuth, (req, res) => {
+  const data = authlib.takeChallenge('pk-reg', req.body.ticket);
+  if (!data || data.userId !== req.user.id) {
+    return res.status(400).json({ error: 'Passkey setup expired — try again.' });
+  }
+  try {
+    const { rpId, origin } = rpInfo(req);
+    const cred = authlib.verifyRegistration({
+      response: req.body.response || {}, challenge: data.challenge, origin, rpId,
+    });
+    db.prepare('INSERT INTO passkeys (id, user_id, public_key, counter, name) VALUES (?, ?, ?, ?, ?)')
+      .run(cred.credentialId, req.user.id, cred.publicKey, cred.counter,
+        String(req.body.name || 'Passkey').trim().slice(0, 60) || 'Passkey');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: `Could not register that passkey: ${e.message}` });
+  }
+});
+
+app.post('/api/passkeys/login/options', (req, res) => {
+  const challenge = crypto.randomBytes(32).toString('base64url');
+  const ticket = authlib.putChallenge('pk-login', { challenge });
+  // No allowCredentials: discoverable credentials let the browser offer
+  // whatever passkeys it holds for this site.
+  res.json({
+    ticket,
+    options: { challenge, rpId: rpInfo(req).rpId, userVerification: 'preferred', timeout: 60000 },
+  });
+});
+
+app.post('/api/passkeys/login/verify', (req, res) => {
+  const data = authlib.takeChallenge('pk-login', req.body.ticket);
+  if (!data) return res.status(400).json({ error: 'Sign-in expired — try again.' });
+  const passkey = db.prepare('SELECT * FROM passkeys WHERE id = ?').get(String(req.body.id || ''));
+  if (!passkey) return res.status(401).json({ error: 'That passkey is not registered here.' });
+  try {
+    const { rpId, origin } = rpInfo(req);
+    const { counter } = authlib.verifyAssertion({
+      response: req.body.response || {}, challenge: data.challenge, origin, rpId,
+      storedKey: passkey.public_key, storedCounter: passkey.counter,
+    });
+    db.prepare('UPDATE passkeys SET counter = ? WHERE id = ?').run(counter, passkey.id);
+    const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(passkey.user_id);
+    startSession(res, user.id);
+    res.json({ id: user.id, username: user.username });
+  } catch (e) {
+    res.status(401).json({ error: `Passkey sign-in failed: ${e.message}` });
+  }
+});
+
+app.delete('/api/passkeys/:id', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  res.json({ ok: true });
+});
+
+// ---------- two-factor authentication (TOTP) ----------
+
+app.post('/api/2fa/setup', requireAuth, (req, res) => {
+  const secret = authlib.newTotpSecret();
+  db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?').run(secret, req.user.id);
+  res.json({ secret, otpauth: authlib.otpauthUrl(secret, req.user.username) });
+});
+
+app.post('/api/2fa/enable', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT totp_secret FROM users WHERE id = ?').get(req.user.id);
+  if (!user.totp_secret) return res.status(400).json({ error: 'Set up an authenticator first.' });
+  if (!authlib.verifyTotp(user.totp_secret, req.body.code)) {
+    return res.status(400).json({ error: 'That code is not right — check your authenticator app.' });
+  }
+  db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = ?').run(req.user.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/2fa/disable', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?').get(req.user.id);
+  if (!user.totp_enabled) return res.status(400).json({ error: 'Two-factor authentication is not on.' });
+  if (!authlib.verifyTotp(user.totp_secret, req.body.code)) {
+    return res.status(400).json({ error: 'Enter a current code from your authenticator to turn 2FA off.' });
+  }
+  db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?').run(req.user.id);
+  res.json({ ok: true });
+});
+
+// ---------- password recovery ----------
+
+app.post('/api/recover', (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const user = email
+    ? db.prepare('SELECT id, username, email FROM users WHERE email = ?').get(email) : null;
+  if (user) {
+    const token = crypto.randomBytes(24).toString('hex');
+    db.prepare('INSERT INTO password_resets (token, user_id, expires_at) VALUES (?, ?, unixepoch() + 3600)')
+      .run(token, user.id);
+    const link = `${req.protocol}://${req.get('host')}/reset?token=${token}`;
+    authlib.sendMail(user.email, 'Reset your Anchor password',
+      `Hi ${user.username},\n\nSomeone (hopefully you) asked to reset your Anchor password.\n` +
+      `Use this link within the next hour:\n\n${link}\n\n` +
+      `If you didn't ask for this, ignore this message — your password is unchanged.`);
+  }
+  // Identical response either way so the endpoint can't be used to probe
+  // which emails have accounts.
+  res.json({ ok: true });
+});
+
+app.post('/api/reset', (req, res) => {
+  const row = db.prepare('SELECT * FROM password_resets WHERE token = ?').get(String(req.body.token || ''));
+  if (!row || row.used || row.expires_at < Math.floor(Date.now() / 1000)) {
+    return res.status(400).json({ error: 'That reset link is invalid or has expired.' });
+  }
+  const password = String(req.body.password || '');
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (password !== String(req.body.password2 || '')) {
+    return res.status(400).json({ error: 'The two passwords do not match.' });
+  }
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), row.user_id);
+  db.prepare('UPDATE password_resets SET used = 1 WHERE token = ?').run(row.token);
+  // Sign the account out everywhere; the new password is the only way back in.
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+  res.json({ ok: true });
+});
+
+// ---------- account management ----------
+
+app.get('/api/account', requireAuth, (req, res) => {
+  const account = db.prepare('SELECT id, username, email, totp_enabled FROM users WHERE id = ?')
+    .get(req.user.id);
+  account.passkeys = db.prepare(
+    'SELECT id, name, created_at FROM passkeys WHERE user_id = ? ORDER BY created_at').all(req.user.id);
+  res.json(account);
+});
+
+app.post('/api/account/email', requireAuth, (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'That does not look like a valid email address.' });
+  }
+  const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  if (!verifyPassword(String(req.body.password || ''), user.password_hash)) {
+    return res.status(403).json({ error: 'Wrong password.' });
+  }
+  try {
+    db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, req.user.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(409).json({ error: 'That email is already registered to another account.' });
+  }
+});
+
+app.post('/api/account/password', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  if (!verifyPassword(String(req.body.current || ''), user.password_hash)) {
+    return res.status(403).json({ error: 'Your current password is wrong.' });
+  }
+  const password = String(req.body.password || '');
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (password !== String(req.body.password2 || '')) {
+    return res.status(400).json({ error: 'The two passwords do not match.' });
+  }
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), req.user.id);
+  // Keep this session, sign out every other device.
+  const token = (req.headers.cookie || '').match(/(?:^|;\s*)session=([a-f0-9]{48})/);
+  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(req.user.id, token ? token[1] : '');
+  res.json({ ok: true });
 });
 
 // ---------- uploads ----------
@@ -269,7 +511,7 @@ function relatedVideos(videoId) {
   return out;
 }
 
-app.get('/api/videos', (req, res) => {
+app.get('/api/videos', requireAuth, (req, res) => {
   const q = String(req.query.q || '').trim();
   const channel = parseInt(req.query.channel, 10);
   const category = String(req.query.category || '').trim();
@@ -329,7 +571,7 @@ function personalizedHome(me, cursor, limit) {
 }
 
 // Search-as-you-type suggestions (de-duplicated titles, most relevant first).
-app.get('/api/search/suggest', (req, res) => {
+app.get('/api/search/suggest', requireAuth, (req, res) => {
   const match = ftsQuery(req.query.q || '');
   if (!match) return res.json({ suggestions: [] });
   const rows = db.prepare(`SELECT title FROM videos_fts WHERE videos_fts MATCH ?
@@ -344,7 +586,7 @@ app.get('/api/search/suggest', (req, res) => {
 });
 
 // Fixed category list plus how many videos sit in each (for browse chips).
-app.get('/api/categories', (req, res) => {
+app.get('/api/categories', requireAuth, (req, res) => {
   const counts = Object.fromEntries(db.prepare(
     `SELECT category, COUNT(*) AS n FROM videos
      WHERE category IS NOT NULL AND category <> '' GROUP BY category`).all()
@@ -352,7 +594,7 @@ app.get('/api/categories', (req, res) => {
   res.json({ categories: CATEGORIES.map(name => ({ name, count: counts[name] || 0 })) });
 });
 
-app.get('/api/videos/:id', (req, res) => {
+app.get('/api/videos/:id', requireAuth, (req, res) => {
   const video = db.prepare(`${VIDEO_SELECT} WHERE v.id = ?`).get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(video.id);
@@ -414,7 +656,7 @@ app.patch('/api/videos/:id', requireAuth, (req, res) => {
 
 // Polled by the watch page while a video is processing; unlike the detail
 // endpoint this does not count a view.
-app.get('/api/videos/:id/status', (req, res) => {
+app.get('/api/videos/:id/status', requireAuth, (req, res) => {
   const video = db.prepare('SELECT id, status, duration FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   res.json({ status: video.status, duration: video.duration, renditions: getRenditions(video.id) });
@@ -456,7 +698,7 @@ app.post('/api/videos/:id/like', requireAuth, (req, res) => {
 
 // ---------- comments ----------
 
-app.get('/api/videos/:id/comments', (req, res) => {
+app.get('/api/videos/:id/comments', requireAuth, (req, res) => {
   const rows = db.prepare(`
     SELECT c.id, c.text, c.created_at, u.id AS user_id, u.username
     FROM comments c JOIN users u ON u.id = c.user_id
@@ -489,7 +731,7 @@ app.delete('/api/comments/:id', requireAuth, (req, res) => {
 
 // ---------- channels & subscriptions ----------
 
-app.get('/api/channels/:id', (req, res) => {
+app.get('/api/channels/:id', requireAuth, (req, res) => {
   const channel = db.prepare('SELECT id, username, created_at FROM users WHERE id = ?').get(req.params.id);
   if (!channel) return res.status(404).json({ error: 'Channel not found.' });
   const me = getUser(req);
@@ -503,7 +745,7 @@ app.get('/api/channels/:id', (req, res) => {
 });
 
 // Paginated videos for a channel page (infinite scroll).
-app.get('/api/channels/:id/videos', (req, res) => {
+app.get('/api/channels/:id/videos', requireAuth, (req, res) => {
   const channelId = parseInt(req.params.id, 10);
   if (!Number.isInteger(channelId)) return res.status(400).json({ error: 'Bad channel id.' });
   res.json(chronoFeed('v.user_id = ?', [channelId], decodeCursor(req.query.cursor), clampLimit(req.query.limit)));
@@ -630,7 +872,7 @@ app.get('/api/feed/subscriptions', requireAuth, (req, res) => {
 
 // ---------- trending (time-decayed popularity) ----------
 
-app.get('/api/trending', (req, res) => {
+app.get('/api/trending', requireAuth, (req, res) => {
   const limit = clampLimit(req.query.limit);
   const cursor = decodeCursor(req.query.cursor);
   const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
@@ -654,7 +896,7 @@ app.get('/api/trending', (req, res) => {
 // The swipe feed: every short, ranked by time-decayed engagement (no window,
 // so the catalogue is always reachable — decay sinks old ones naturally).
 // ?start=<id> pins that short to the front of the first page.
-app.get('/api/shorts', (req, res) => {
+app.get('/api/shorts', requireAuth, (req, res) => {
   const limit = clampLimit(req.query.limit);
   const cursor = decodeCursor(req.query.cursor);
   const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
@@ -684,7 +926,7 @@ app.get('/api/shorts', (req, res) => {
 
 // The shorts player never hits GET /api/videos/:id (which is what counts a
 // view elsewhere), so it reports views here once a short actually plays.
-app.post('/api/videos/:id/view', (req, res) => {
+app.post('/api/videos/:id/view', requireAuth, (req, res) => {
   const info = db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(req.params.id);
   if (!info.changes) return res.status(404).json({ error: 'Video not found.' });
   res.json({ ok: true });
@@ -692,14 +934,20 @@ app.post('/api/videos/:id/view', (req, res) => {
 
 // ---------- pretty page routes ----------
 
-app.get('/watch/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
-app.get('/shorts', (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
-app.get('/shorts/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
-app.get('/channel/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
-app.get('/upload', (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
-app.get('/browse', (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));
-for (const page of ['trending', 'history', 'liked', 'later', 'subscriptions']) {
-  app.get('/' + page, (req, res) => res.sendFile(path.join(__dirname, 'public', `${page}.html`)));
+// Signed-out visitors land on the splash page; the reset page is the only
+// other place they can go.
+app.get('/', (req, res) =>
+  res.sendFile(path.join(__dirname, 'public', req.user ? 'index.html' : 'splash.html')));
+app.get('/reset', (req, res) => res.sendFile(path.join(__dirname, 'public', 'reset.html')));
+
+app.get('/watch/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
+app.get('/shorts', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
+app.get('/shorts/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
+app.get('/channel/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
+app.get('/upload', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
+app.get('/browse', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));
+for (const page of ['trending', 'history', 'liked', 'later', 'subscriptions', 'settings']) {
+  app.get('/' + page, pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', `${page}.html`)));
 }
 
 app.use((err, req, res, next) => {

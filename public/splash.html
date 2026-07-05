@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anchor — a home for free expression</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="splash-page">
+  <main class="splash">
+    <section class="hero">
+      <div class="hero-mark" aria-hidden="true">&#9875;</div>
+      <h1>Your voice, anchored.</h1>
+      <p class="tagline">
+        Anchor is a video platform built for free expression. Publish what you make,
+        say what you think, and build a channel that answers to your audience —
+        not to an algorithm's advertisers.
+      </p>
+      <button class="primary big" onclick="openAuthModal('register')">Sign up — it's free</button>
+      <p class="signin-hint">Already have an account?
+        <a class="linkish" onclick="openAuthModal('login')">Sign in</a></p>
+    </section>
+
+    <section class="splash-features" aria-label="What Anchor offers">
+      <div class="feature">
+        <div class="feature-ic" aria-hidden="true">&#127908;</div>
+        <h3>Publish freely</h3>
+        <p>Upload in minutes with automatic quality renditions, thumbnails, tags and
+          categories. Long-form or vertical Shorts — your work, your format.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" aria-hidden="true">&#128269;</div>
+        <h3>Be discovered</h3>
+        <p>Full-text search, topic-aware recommendations and a trending feed surface
+          your videos on their merits — no pay-to-play placement.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" aria-hidden="true">&#128172;</div>
+        <h3>Own the conversation</h3>
+        <p>Comments, likes and subscriptions connect you directly with your viewers,
+          on a platform that treats expression as the point — not the product.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" aria-hidden="true">&#128737;</div>
+        <h3>Your account, protected</h3>
+        <p>Passkeys, two-factor authentication and email recovery keep your channel
+          in your hands and no one else's.</p>
+      </div>
+    </section>
+
+    <section class="splash-cta">
+      <h2>Ready to drop anchor?</h2>
+      <button class="primary big" onclick="openAuthModal('register')">Create your account</button>
+    </section>
+  </main>
+  <script src="/common.js"></script>
+</body>
+</html>

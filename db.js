@@ -87,6 +87,24 @@ db.exec(`
     PRIMARY KEY (user_id, video_id)
   );
 
+  -- WebAuthn credentials; public_key is a JWK (JSON), id is the base64url
+  -- credential id reported by the authenticator.
+  CREATE TABLE IF NOT EXISTS passkeys (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    public_key TEXT NOT NULL,
+    counter INTEGER NOT NULL DEFAULT 0,
+    name TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS password_resets (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE
@@ -130,6 +148,19 @@ if (!videoColumns.some(c => c.name === 'category')) {
 if (!videoColumns.some(c => c.name === 'is_short')) {
   db.exec('ALTER TABLE videos ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0');
 }
+
+// Account-security columns. email is nullable because pre-existing accounts
+// have none (they can add one in Settings); new signups require it.
+const userColumns = db.prepare('PRAGMA table_info(users)').all();
+if (!userColumns.some(c => c.name === 'email')) {
+  db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL');
+}
+if (!userColumns.some(c => c.name === 'totp_secret')) {
+  db.exec('ALTER TABLE users ADD COLUMN totp_secret TEXT');
+  db.exec('ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0');
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id)');
 
 // Rebuild a single video's FTS row from the source tables. The only writer of
 // videos_fts inserts; every mutation (upload, edit, tag change) routes here.

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>Account settings</h1>
+
+    <div class="panel settings-panel">
+      <h2>Recovery email</h2>
+      <p class="modal-note" id="email-status"></p>
+      <form id="email-form">
+        <div class="field"><label>Email address</label>
+          <input name="email" type="email" required autocomplete="email"></div>
+        <div class="field"><label>Current password</label>
+          <input name="password" type="password" required autocomplete="current-password"></div>
+        <button class="primary">Save email</button>
+        <div class="error-msg" id="email-error"></div>
+      </form>
+    </div>
+
+    <div class="panel settings-panel">
+      <h2>Change password</h2>
+      <form id="password-form">
+        <div class="field"><label>Current password</label>
+          <input name="current" type="password" required autocomplete="current-password"></div>
+        <div class="field"><label>New password (at least 8 characters)</label>
+          <input name="password" type="password" required minlength="8" autocomplete="new-password"></div>
+        <div class="field"><label>Confirm new password</label>
+          <input name="password2" type="password" required minlength="8" autocomplete="new-password"></div>
+        <button class="primary">Change password</button>
+        <div class="error-msg" id="password-error"></div>
+      </form>
+      <p class="modal-note">Changing your password signs out every other device.</p>
+    </div>
+
+    <div class="panel settings-panel">
+      <h2>Two-factor authentication</h2>
+      <p class="modal-note" id="tfa-status"></p>
+      <div id="tfa-box"></div>
+    </div>
+
+    <div class="panel settings-panel">
+      <h2>Passkeys</h2>
+      <p class="modal-note">Sign in with your fingerprint, face or device PIN instead of a password.</p>
+      <div id="passkey-list"></div>
+      <button id="add-passkey"><span class="ic-inline" data-icon="key"></span> Add a passkey</button>
+      <div class="error-msg" id="passkey-error"></div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    let account = null;
+
+    async function refresh() {
+      account = await api('/api/account');
+      // Email
+      document.getElementById('email-status').textContent = account.email
+        ? `Recovery email: ${account.email}`
+        : 'No recovery email set — add one so you can reset a forgotten password.';
+      document.querySelector('#email-form [name=email]').value = account.email || '';
+      renderTfa();
+      renderPasskeys();
+    }
+
+    function renderTfa() {
+      const status = document.getElementById('tfa-status');
+      const box = document.getElementById('tfa-box');
+      if (account.totp_enabled) {
+        status.textContent = 'Two-factor authentication is ON. Signing in requires a code from your authenticator app.';
+        box.innerHTML = `
+          <form id="tfa-off-form">
+            <div class="field"><label>Enter a current code to turn it off</label>
+              <input name="code" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6"></div>
+            <button class="danger" style="border:1px solid var(--danger)">Turn off 2FA</button>
+            <div class="error-msg" id="tfa-error"></div>
+          </form>`;
+        document.getElementById('tfa-off-form').onsubmit = async e => {
+          e.preventDefault();
+          try {
+            await api('/api/2fa/disable', {
+              method: 'POST', json: { code: new FormData(e.target).get('code') },
+            });
+            toast('Two-factor authentication is off');
+            refresh();
+          } catch (err) { document.getElementById('tfa-error').textContent = err.message; }
+        };
+      } else {
+        status.textContent = 'Two-factor authentication is off.';
+        box.innerHTML = `<button id="tfa-on">${icon('phone')} Enable two-factor authentication</button>`;
+        document.getElementById('tfa-on').onclick = () => {
+          // Reuse the modal's setup view inside this panel.
+          totpSetupView(box, () => refresh());
+        };
+      }
+    }
+
+    function renderPasskeys() {
+      const list = document.getElementById('passkey-list');
+      if (!account.passkeys.length) {
+        list.innerHTML = '<p class="modal-note">No passkeys yet.</p>';
+        return;
+      }
+      list.innerHTML = account.passkeys.map(p => `
+        <div class="passkey-row">
+          <span>${icon('key')} <b>${esc(p.name || 'Passkey')}</b>
+            <span class="modal-note">added ${timeAgo(p.created_at)}</span></span>
+          <button class="danger" data-id="${esc(p.id)}">Remove</button>
+        </div>`).join('');
+      for (const btn of list.querySelectorAll('button[data-id]')) {
+        btn.onclick = async () => {
+          try {
+            await api('/api/passkeys/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
+            toast('Passkey removed');
+            refresh();
+          } catch (err) { toast(err.message, 'error'); }
+        };
+      }
+    }
+
+    document.getElementById('email-form').onsubmit = async e => {
+      e.preventDefault();
+      const data = new FormData(e.target);
+      try {
+        await api('/api/account/email', {
+          method: 'POST', json: { email: data.get('email'), password: data.get('password') },
+        });
+        toast('Email saved');
+        e.target.reset();
+        refresh();
+      } catch (err) { document.getElementById('email-error').textContent = err.message; }
+    };
+
+    document.getElementById('password-form').onsubmit = async e => {
+      e.preventDefault();
+      const data = new FormData(e.target);
+      document.getElementById('password-error').textContent = '';
+      if (data.get('password') !== data.get('password2')) {
+        return document.getElementById('password-error').textContent = 'The two passwords do not match.';
+      }
+      try {
+        await api('/api/account/password', {
+          method: 'POST',
+          json: { current: data.get('current'), password: data.get('password'), password2: data.get('password2') },
+        });
+        toast('Password changed');
+        e.target.reset();
+      } catch (err) { document.getElementById('password-error').textContent = err.message; }
+    };
+
+    document.getElementById('add-passkey').onclick = async () => {
+      const name = prompt('Name this passkey (e.g. "Laptop", "Phone"):', 'Passkey');
+      if (name === null) return;
+      try {
+        await createPasskey(name || 'Passkey');
+        toast('Passkey added');
+        refresh();
+      } catch (e) {
+        if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+          document.getElementById('passkey-error').textContent = e.message;
+        }
+      }
+    };
+    if (!passkeysSupported()) {
+      document.getElementById('add-passkey').disabled = true;
+      document.getElementById('passkey-error').textContent = 'This browser does not support passkeys.';
+    }
+
+    document.addEventListener('auth-ready', () => {
+      if (!ME) { location.href = '/'; return; }
+      refresh().catch(e => toast(e.message, 'error'));
+    }, { once: true });
+  </script>
+</body>
+</html>

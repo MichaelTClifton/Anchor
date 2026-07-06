@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div class="watch-layout">
+      <div id="primary"></div>
+      <div class="related" id="related"></div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const videoId = location.pathname.split('/').pop();
+    let video = null;
+
+    document.addEventListener('auth-ready', loadVideo, { once: true });
+
+    async function loadVideo() {
+      try {
+        video = await api(`/api/videos/${encodeURIComponent(videoId)}`);
+      } catch (err) {
+        document.getElementById('primary').innerHTML =
+          `<div class="empty">${esc(err.message)}</div>`;
+        return;
+      }
+      document.title = `${video.title} - Anchor`;
+      renderPrimary();
+      document.getElementById('related').innerHTML =
+        video.related.map(v => videoCard(v, { side: true })).join('') ||
+        '<div class="empty">No other videos yet.</div>';
+      loadComments();
+    }
+
+    function renderPrimary() {
+      const v = video;
+      document.getElementById('primary').innerHTML = `
+        <video class="player" src="/media/${esc(v.filename)}" controls autoplay
+          ${v.thumbnail ? `poster="/thumbs/${esc(v.thumbnail)}"` : ''}></video>
+        <div class="player-tools">
+          <label class="autoplay-toggle"><input type="checkbox" id="autoplay-next"> Autoplay next</label>
+          <span class="spacer"></span>
+          <label class="speed-ctl">Speed
+            <select id="speed" title="Playback speed (Shift+. / Shift+,)">
+              <option value="0.25">0.25&times;</option><option value="0.5">0.5&times;</option>
+              <option value="0.75">0.75&times;</option><option value="1" selected>Normal</option>
+              <option value="1.25">1.25&times;</option><option value="1.5">1.5&times;</option>
+              <option value="1.75">1.75&times;</option><option value="2">2&times;</option>
+            </select></label>
+          <button id="pip-btn" class="tool-btn" title="Mini-player (i)" hidden>${icon('pip')} Mini-player</button>
+          <button id="theater-btn" class="tool-btn" title="Theater mode (t)">${icon('theater')} Theater</button>
+        </div>
+        <div class="watch-title">${esc(v.title)}</div>
+        <div class="watch-bar">
+          <div class="channel-row">
+            <a class="avatar" href="/channel/${v.channel_id}">${esc(v.channel_name[0].toUpperCase())}</a>
+            <div>
+              <a href="/channel/${v.channel_id}"><b>${esc(v.channel_name)}</b></a>
+              <div class="sub-count" id="sub-count">${subscriberLabel(v.subscribers)}</div>
+            </div>
+            ${v.is_owner ? '' : `<button id="sub-btn" class="${v.subscribed ? 'subscribed' : 'primary'}">
+              ${v.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+          </div>
+          <div class="actions">
+            <select id="quality" title="Quality" hidden></select>
+            <div class="pill-group">
+              <button id="like-btn" class="${v.my_like === 1 ? 'active' : ''}">
+                ${icon('thumb')} <span id="like-count">${formatViews(v.likes)}</span></button>
+              <button id="dislike-btn" class="${v.my_like === -1 ? 'active' : ''}">
+                ${icon('thumbdown')} <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
+            </div>
+            ${ME ? `<button id="wl-btn2" class="${v.in_watch_later ? 'active' : ''}">${v.in_watch_later ? '✓ Saved' : '+ Watch Later'}</button>` : ''}
+            ${v.is_owner ? '<button id="edit-btn">Edit</button><button class="danger" id="delete-btn">Delete video</button>' : ''}
+          </div>
+        </div>
+        <div id="edit-panel" hidden></div>
+        <div class="description">
+          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}<span id="processing-note" ${v.status === 'processing' ? '' : 'hidden'}> &middot; preparing more qualities&hellip;</span></div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
+        </div>
+        ${(v.tags && v.tags.length) || v.category ? `<div class="tag-row">
+          ${v.category ? `<a class="chip cat" href="/browse?category=${encodeURIComponent(v.category)}">${esc(v.category)}</a>` : ''}
+          ${(v.tags || []).map(t => `<a class="chip" href="/?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}
+        </div>` : ''}
+        <div class="comments">
+          <h3 id="comments-heading">Comments</h3>
+          <div class="comment-form" id="comment-form-slot"></div>
+          <div id="comment-list"></div>
+        </div>
+      `;
+
+      document.getElementById('like-btn').onclick = () => sendLike(1);
+      document.getElementById('dislike-btn').onclick = () => sendLike(-1);
+
+      document.getElementById('quality').onchange = switchQuality;
+      renderQuality();
+      if (v.status === 'processing') setTimeout(pollStatus, 5000);
+
+      const subBtn = document.getElementById('sub-btn');
+      if (subBtn) subBtn.onclick = async () => {
+        if (!ME) return openAuthModal('login');
+        const r = await api(`/api/channels/${v.channel_id}/subscribe`, { method: 'POST' });
+        subBtn.textContent = r.subscribed ? 'Subscribed' : 'Subscribe';
+        subBtn.className = r.subscribed ? 'subscribed' : 'primary';
+        document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
+      };
+
+      const deleteBtn = document.getElementById('delete-btn');
+      if (deleteBtn) deleteBtn.onclick = async () => {
+        if (!confirm('Delete this video permanently?')) return;
+        await api(`/api/videos/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+        location.href = '/';
+      };
+
+      const editBtn = document.getElementById('edit-btn');
+      if (editBtn) editBtn.onclick = toggleEdit;
+
+      const slot = document.getElementById('comment-form-slot');
+      if (ME) {
+        slot.innerHTML = `
+          <div class="avatar">${esc(ME.username[0].toUpperCase())}</div>
+          <textarea id="comment-text" placeholder="Add a comment..." rows="1"></textarea>
+          <button class="primary" id="comment-btn">Comment</button>
+        `;
+        slot.querySelector('#comment-btn').onclick = postComment;
+      } else {
+        slot.innerHTML = `<button onclick="openAuthModal('login')">Sign in to comment</button>`;
+      }
+
+      const wlBtn = document.getElementById('wl-btn2');
+      if (wlBtn) wlBtn.onclick = async () => {
+        try {
+          const r = await api('/api/watch-later', { method: 'POST', json: { video_id: v.id } });
+          video.in_watch_later = r.in_watch_later;
+          wlBtn.textContent = r.in_watch_later ? '✓ Saved' : '+ Watch Later';
+          wlBtn.classList.toggle('active', r.in_watch_later);
+          toast(r.in_watch_later ? 'Saved to Watch Later' : 'Removed from Watch Later');
+        } catch (err) { toast(err.message, 'error'); }
+      };
+
+      setupResumeAndProgress();
+      setupPlayerControls();
+    }
+
+    // Speed menu, theater mode, picture-in-picture, autoplay-next, keyboard shortcuts.
+    function setupPlayerControls() {
+      const player = document.querySelector('.player');
+      const layout = document.querySelector('.watch-layout');
+
+      // Speed
+      const speed = document.getElementById('speed');
+      speed.onchange = () => { player.playbackRate = parseFloat(speed.value); };
+
+      // Theater mode (persisted)
+      const theaterBtn = document.getElementById('theater-btn');
+      const applyTheater = on => {
+        layout.classList.toggle('theater', on);
+        theaterBtn.classList.toggle('active', on);
+      };
+      applyTheater(localStorage.getItem('theater') === '1');
+      theaterBtn.onclick = () => {
+        const on = !layout.classList.contains('theater');
+        localStorage.setItem('theater', on ? '1' : '0');
+        applyTheater(on);
+      };
+
+      // Picture-in-picture (only if supported)
+      const pipBtn = document.getElementById('pip-btn');
+      if (document.pictureInPictureEnabled) {
+        pipBtn.hidden = false;
+        pipBtn.onclick = async () => {
+          try {
+            if (document.pictureInPictureElement) await document.exitPictureInPicture();
+            else await player.requestPictureInPicture();
+          } catch (e) { toast('Picture-in-picture is unavailable here.', 'error'); }
+        };
+      }
+
+      // Autoplay-next (persisted, default on)
+      const autoplay = document.getElementById('autoplay-next');
+      autoplay.checked = localStorage.getItem('autoplay-next') !== '0';
+      autoplay.onchange = () => localStorage.setItem('autoplay-next', autoplay.checked ? '1' : '0');
+      player.addEventListener('ended', () => {
+        if (autoplay.checked && video.related && video.related.length) {
+          const next = video.related[0];
+          toast(`Up next: ${next.title}`);
+          setTimeout(() => { location.href = `/watch/${next.id}`; }, 800);
+        }
+      });
+
+      // Keyboard shortcuts (ignored while typing in a field)
+      document.addEventListener('keydown', e => {
+        const tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey) return;
+        const k = e.key;
+        // Clamp to [0, duration] once duration is known; before then allow the
+        // seek and let the browser clamp it.
+        const clamp = t => { const d = player.duration; return Math.max(0, d ? Math.min(d, t) : t); };
+        if (k === ' ' || k === 'k') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
+        else if (k === 'j') player.currentTime = clamp(player.currentTime - 10);
+        else if (k === 'l') player.currentTime = clamp(player.currentTime + 10);
+        else if (k === 'ArrowLeft') { e.preventDefault(); player.currentTime = clamp(player.currentTime - 5); }
+        else if (k === 'ArrowRight') { e.preventDefault(); player.currentTime = clamp(player.currentTime + 5); }
+        else if (k === 'ArrowUp') { e.preventDefault(); player.volume = Math.min(1, player.volume + 0.1); }
+        else if (k === 'ArrowDown') { e.preventDefault(); player.volume = Math.max(0, player.volume - 0.1); }
+        else if (k === 'm') player.muted = !player.muted;
+        else if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else player.requestFullscreen?.(); }
+        else if (k === 't') theaterBtn.click();
+        else if (k === 'i' && !pipBtn.hidden) pipBtn.click();
+        else if (k >= '0' && k <= '9') player.currentTime = clamp((player.duration || 0) * Number(k) / 10);
+        else if (k === '>' || (k === '.' && e.shiftKey)) bumpSpeed(speed, +1);
+        else if (k === '<' || (k === ',' && e.shiftKey)) bumpSpeed(speed, -1);
+        else return;
+      });
+    }
+
+    function bumpSpeed(speed, dir) {
+      const i = Math.max(0, Math.min(speed.options.length - 1, speed.selectedIndex + dir));
+      speed.selectedIndex = i;
+      speed.onchange();
+      toast(`Speed ${speed.value}×`);
+    }
+
+    // Resume from the saved position and report progress back periodically.
+    function setupResumeAndProgress() {
+      const player = document.querySelector('.player');
+      if (video.resume && video.resume > 5) {
+        player.addEventListener('loadedmetadata', () => {
+          if (video.resume < player.duration - 5) {
+            player.currentTime = video.resume;
+            toast(`Resumed from ${formatDuration(video.resume)}`);
+          }
+        }, { once: true });
+      }
+      if (!ME) return;
+      const send = beacon => {
+        if (!player.duration) return;
+        const payload = { video_id: video.id, position: player.currentTime, duration: player.duration };
+        if (beacon && navigator.sendBeacon) {
+          navigator.sendBeacon('/api/history',
+            new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+        } else {
+          api('/api/history', { method: 'POST', json: payload }).catch(() => {});
+        }
+      };
+      setInterval(() => { if (!player.paused) send(false); }, 15000);
+      player.addEventListener('pause', () => send(false));
+      window.addEventListener('beforeunload', () => send(true));
+    }
+
+    const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
+
+    function toggleEdit() {
+      const panel = document.getElementById('edit-panel');
+      if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ''; return; }
+      const v = video;
+      panel.hidden = false;
+      panel.innerHTML = `
+        <div class="field"><label>Title</label>
+          <input id="edit-title" maxlength="120" value="${esc(v.title)}"></div>
+        <div class="field"><label>Description</label>
+          <textarea id="edit-desc" rows="3" maxlength="5000">${esc(v.description)}</textarea></div>
+        <div class="field"><label>Category</label>
+          <select id="edit-cat"><option value="">No category</option>
+            ${CATEGORIES.map(c => `<option ${c === v.category ? 'selected' : ''}>${c}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>Tags (comma-separated, up to 5)</label>
+          <input id="edit-tags" maxlength="120" value="${esc((v.tags || []).join(', '))}"></div>
+        <button class="primary" id="edit-save">Save changes</button>
+        <button id="edit-cancel">Cancel</button>
+        <div class="error-msg" id="edit-error"></div>`;
+      panel.querySelector('#edit-cancel').onclick = toggleEdit;
+      panel.querySelector('#edit-save').onclick = saveEdit;
+    }
+
+    async function saveEdit() {
+      try {
+        await api(`/api/videos/${encodeURIComponent(video.id)}`, {
+          method: 'PATCH',
+          json: {
+            title: document.getElementById('edit-title').value,
+            description: document.getElementById('edit-desc').value,
+            category: document.getElementById('edit-cat').value,
+            tags: document.getElementById('edit-tags').value,
+          },
+        });
+        location.reload();
+      } catch (err) {
+        document.getElementById('edit-error').textContent = err.message;
+      }
+    }
+
+    function renderQuality() {
+      const sel = document.getElementById('quality');
+      if (!video.renditions || !video.renditions.length) return;
+      const current = sel.value;
+      sel.innerHTML = `<option value="${esc(video.filename)}">Original</option>` +
+        video.renditions.map(r =>
+          `<option value="${esc(r.filename)}">${r.height}p</option>`).join('');
+      if ([...sel.options].some(o => o.value === current)) sel.value = current;
+      sel.hidden = false;
+    }
+
+    function switchQuality() {
+      const player = document.querySelector('.player');
+      const time = player.currentTime;
+      const paused = player.paused;
+      player.addEventListener('loadedmetadata', () => {
+        player.currentTime = time;
+        if (!paused) player.play();
+      }, { once: true });
+      player.src = `/media/${document.getElementById('quality').value}`;
+      player.load();
+    }
+
+    async function pollStatus() {
+      let r;
+      try {
+        r = await api(`/api/videos/${encodeURIComponent(videoId)}/status`);
+      } catch (err) {
+        return; // video was deleted mid-watch; nothing to update
+      }
+      video.renditions = r.renditions;
+      renderQuality();
+      if (r.status === 'processing') {
+        setTimeout(pollStatus, 5000);
+      } else {
+        document.getElementById('processing-note').hidden = true;
+      }
+    }
+
+    async function sendLike(value) {
+      if (!ME) return openAuthModal('login');
+      if (video.my_like === value) value = 0;
+      const r = await api(`/api/videos/${encodeURIComponent(video.id)}/like`,
+        { method: 'POST', json: { value } });
+      video.my_like = r.my_like;
+      document.getElementById('like-count').textContent = formatViews(r.likes);
+      document.getElementById('dislike-count').textContent = formatViews(r.dislikes);
+      document.getElementById('like-btn').classList.toggle('active', r.my_like === 1);
+      document.getElementById('dislike-btn').classList.toggle('active', r.my_like === -1);
+    }
+
+    async function loadComments() {
+      const { comments } = await api(`/api/videos/${encodeURIComponent(videoId)}/comments`);
+      document.getElementById('comments-heading').textContent =
+        `${comments.length} Comment${comments.length === 1 ? '' : 's'}`;
+      document.getElementById('comment-list').innerHTML = comments.map(c => `
+        <div class="comment">
+          <a class="avatar" href="/channel/${c.user_id}">${esc(c.username[0].toUpperCase())}</a>
+          <div class="body">
+            <div class="who">${esc(c.username)}<span class="when">${timeAgo(c.created_at)}</span></div>
+            <div class="text">${esc(c.text)}</div>
+          </div>
+          ${ME && ME.id === c.user_id
+            ? `<button class="danger" onclick="deleteComment(${c.id})">Delete</button>` : ''}
+        </div>
+      `).join('') || '<div style="color:var(--text-dim)">No comments yet.</div>';
+    }
+
+    async function postComment() {
+      const box = document.getElementById('comment-text');
+      const text = box.value.trim();
+      if (!text) return;
+      await api(`/api/videos/${encodeURIComponent(videoId)}/comments`,
+        { method: 'POST', json: { text } });
+      box.value = '';
+      loadComments();
+    }
+
+    async function deleteComment(id) {
+      await api(`/api/comments/${id}`, { method: 'DELETE' });
+      loadComments();
+    }
+  </script>
+</body>
+</html>

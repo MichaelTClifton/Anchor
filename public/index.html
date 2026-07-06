@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="continue-row"></div>
+    <div id="shorts-row"></div>
+    <div id="results-heading"></div>
+    <div class="grid" id="grid"></div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const q = new URLSearchParams(location.search).get('q');
+    if (q) {
+      document.getElementById('results-heading').innerHTML =
+        `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
+      document.title = `${q} - Anchor`;
+    } else {
+      // Shorts shelf (shorts are excluded from the main grid).
+      (async () => {
+        try {
+          const { videos } = await api('/api/shorts?limit=12');
+          if (videos.length) {
+            document.getElementById('shorts-row').innerHTML =
+              `<h2><a href="/shorts">${icon('bolt')} Shorts</a></h2>
+               <div class="row shorts-shelf">${videos.map(shortCard).join('')}</div>`;
+          }
+        } catch (e) { /* shelf is optional */ }
+      })();
+      // Continue-watching shelf for signed-in viewers.
+      document.addEventListener('auth-ready', async () => {
+        if (!ME) return;
+        try {
+          const { videos } = await api('/api/history?incomplete=1&limit=12');
+          if (videos.length) {
+            document.getElementById('continue-row').innerHTML =
+              `<h2>Continue watching</h2><div class="row">${videos.map(v => videoCard(v)).join('')}</div>`;
+          }
+        } catch (e) { /* not signed in / no history */ }
+      }, { once: true });
+    }
+    mountFeed(cursor => {
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (cursor) params.set('cursor', cursor);
+      const qs = params.toString();
+      return api('/api/videos' + (qs ? `?${qs}` : ''));
+    }, { emptyMsg: q ? 'No videos matched your search.' : 'No videos yet. Be the first to upload one!' });
+  </script>
+</body>
+</html>

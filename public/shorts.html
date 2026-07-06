@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shorts - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="shorts-page">
+  <main>
+    <div class="shorts-scroller" id="scroller" tabindex="0" aria-label="Shorts feed"></div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    // Vertical swipe feed: one short per viewport, snap scrolling, the visible
+    // short autoplays (looped) while every other one pauses.
+    const scroller = document.getElementById('scroller');
+    const startId = location.pathname.match(/^\/shorts\/([^/]+)/)?.[1] || '';
+    let cursor = null, done = false, busy = false;
+    let muted = localStorage.getItem('shortsMuted') !== '0';
+    let activeEl = null;
+
+    function shortEl(v) {
+      const el = document.createElement('section');
+      el.className = 'short';
+      el.dataset.id = v.id;
+      el.innerHTML = `
+        <div class="short-stage">
+          <video src="/media/${esc(v.filename)}" ${v.thumbnail ? `poster="/thumbs/${esc(v.thumbnail)}"` : ''}
+            loop playsinline preload="metadata"></video>
+          <div class="short-pause-flash" aria-hidden="true">&#10074;&#10074;</div>
+          <div class="short-info">
+            <a class="short-channel" href="/channel/${v.channel_id}">${icon('user')} ${esc(v.channel_name)}</a>
+            <div class="short-title">${esc(v.title)}</div>
+            <div class="short-meta">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}</div>
+          </div>
+          <div class="short-actions">
+            <button class="short-btn like-btn ${v.my_like === 1 ? 'active' : ''}" aria-label="Like">
+              ${icon('thumb')}<span class="n">${formatViews(v.like_count)}</span></button>
+            <a class="short-btn" href="/watch/${esc(v.id)}" aria-label="Open comments">
+              ${icon('comment')}<span class="n">${formatViews(v.comment_count)}</span></a>
+            <button class="short-btn mute-btn" aria-label="Toggle sound">${icon(muted ? 'mute' : 'sound')}</button>
+            <button class="short-btn share-btn" aria-label="Copy link">${icon('share')}<span class="n">Share</span></button>
+          </div>
+        </div>`;
+
+      const video = el.querySelector('video');
+      video.muted = muted;
+      let viewed = false;
+      video.addEventListener('playing', () => {
+        if (viewed) return;
+        viewed = true;
+        fetch(`/api/videos/${encodeURIComponent(v.id)}/view`, { method: 'POST' }).catch(() => {});
+        el.dataset.views = ++v.views;
+        el.querySelector('.short-meta').innerHTML =
+          `${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}`;
+      });
+      video.addEventListener('click', () => {
+        const flash = el.querySelector('.short-pause-flash');
+        if (video.paused) { video.play().catch(() => {}); flash.classList.remove('show'); }
+        else { video.pause(); flash.classList.add('show'); }
+      });
+
+      el.querySelector('.like-btn').onclick = async e => {
+        if (!ME) return openAuthModal('login');
+        const btn = e.currentTarget;
+        const value = btn.classList.contains('active') ? 0 : 1;
+        try {
+          const r = await api(`/api/videos/${encodeURIComponent(v.id)}/like`,
+            { method: 'POST', json: { value } });
+          btn.classList.toggle('active', r.my_like === 1);
+          btn.querySelector('.n').textContent = formatViews(r.likes);
+        } catch (err) { toast(err.message, 'error'); }
+      };
+      el.querySelector('.mute-btn').onclick = () => setMuted(!muted);
+      el.querySelector('.share-btn').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(`${location.origin}/shorts/${v.id}`);
+          toast('Link copied');
+        } catch (err) { toast('Could not copy the link', 'error'); }
+      };
+      io.observe(el);
+      return el;
+    }
+
+    function setMuted(m) {
+      muted = m;
+      localStorage.setItem('shortsMuted', m ? '1' : '0');
+      for (const s of scroller.querySelectorAll('.short')) {
+        s.querySelector('video').muted = m;
+        s.querySelector('.mute-btn').innerHTML = icon(m ? 'mute' : 'sound');
+      }
+    }
+
+    // The most-visible short plays; everything else pauses.
+    const io = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const video = entry.target.querySelector('video');
+        if (entry.intersectionRatio >= 0.6) {
+          if (activeEl && activeEl !== entry.target) activeEl.querySelector('video').pause();
+          activeEl = entry.target;
+          entry.target.querySelector('.short-pause-flash').classList.remove('show');
+          video.muted = muted;
+          video.play().catch(() => {
+            // Autoplay with sound can be blocked before any interaction.
+            video.muted = true;
+            video.play().catch(() => {});
+          });
+          history.replaceState(null, '', `/shorts/${entry.target.dataset.id}`);
+        } else if (!entry.isIntersecting || entry.intersectionRatio < 0.4) {
+          video.pause();
+        }
+      }
+    }, { root: scroller, threshold: [0, 0.4, 0.6] });
+
+    async function loadMore() {
+      if (busy || done) return;
+      busy = true;
+      try {
+        const params = new URLSearchParams();
+        if (cursor) params.set('cursor', cursor);
+        else if (startId) params.set('start', startId);
+        const data = await api('/api/shorts?' + params.toString());
+        for (const v of data.videos) scroller.appendChild(shortEl(v));
+        cursor = data.nextCursor;
+        if (!cursor) done = true;
+        if (!scroller.children.length) {
+          scroller.innerHTML = `<div class="empty">No Shorts yet.<br><br>
+            Upload a vertical video under a minute long and it will show up here.</div>`;
+        }
+      } catch (e) {
+        toast(e.message, 'error');
+        done = true;
+      }
+      busy = false;
+    }
+
+    // Fetch the next page as the viewer nears the bottom of the loaded feed.
+    scroller.addEventListener('scroll', () => {
+      if (scroller.scrollTop + scroller.clientHeight * 3 >= scroller.scrollHeight) loadMore();
+    });
+
+    function step(dir) {
+      const shorts = [...scroller.querySelectorAll('.short')];
+      const i = shorts.indexOf(activeEl);
+      const next = shorts[Math.min(shorts.length - 1, Math.max(0, i + dir))];
+      if (next) next.scrollIntoView({ behavior: 'smooth' });
+    }
+    document.addEventListener('keydown', e => {
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
+      else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }
+      else if (e.key === 'm') { setMuted(!muted); }
+      else if (e.key === ' ') {
+        e.preventDefault();
+        if (activeEl) activeEl.querySelector('video').click();
+      }
+    });
+
+    loadMore();
+  </script>
+</body>
+</html>

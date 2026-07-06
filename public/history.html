@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>History - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h2 id="page-heading">Watch history</h2>
+    <div class="grid" id="grid"></div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    simpleFeedPage({ heading: 'Watch history', endpoint: '/api/history', auth: true,
+      emptyMsg: 'Videos you watch will appear here.',
+      card: v => videoCard(v, { remove: 'history' }) });
+  </script>
+</body>
+</html>

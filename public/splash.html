@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anchor — a home for free expression</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="splash-page">
+  <main class="splash">
+    <section class="hero">
+      <div class="hero-mark" data-icon="anchor" aria-hidden="true"></div>
+      <h1>Your voice, anchored.</h1>
+      <p class="tagline">
+        Anchor is a video platform built for free expression. Publish what you make,
+        say what you think, and build a channel that answers to your audience —
+        not to an algorithm's advertisers.
+      </p>
+      <button class="primary big" onclick="openAuthModal('register')">Sign up — it's free</button>
+      <p class="signin-hint">Already have an account?
+        <a class="linkish" onclick="openAuthModal('login')">Sign in</a></p>
+    </section>
+
+    <section class="splash-features" aria-label="What Anchor offers">
+      <div class="feature">
+        <div class="feature-ic" data-icon="mic" aria-hidden="true"></div>
+        <h3>Publish freely</h3>
+        <p>Upload in minutes with automatic quality renditions, thumbnails, tags and
+          categories. Long-form or vertical Shorts — your work, your format.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" data-icon="search" aria-hidden="true"></div>
+        <h3>Be discovered</h3>
+        <p>Full-text search, topic-aware recommendations and a trending feed surface
+          your videos on their merits — no pay-to-play placement.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" data-icon="comment" aria-hidden="true"></div>
+        <h3>Own the conversation</h3>
+        <p>Comments, likes and subscriptions connect you directly with your viewers,
+          on a platform that treats expression as the point — not the product.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-ic" data-icon="shield" aria-hidden="true"></div>
+        <h3>Your account, protected</h3>
+        <p>Passkeys, two-factor authentication and email recovery keep your channel
+          in your hands and no one else's.</p>
+      </div>
+    </section>
+
+    <section class="splash-cta">
+      <h2>Ready to drop anchor?</h2>
+      <button class="primary big" onclick="openAuthModal('register')">Create your account</button>
+    </section>
+  </main>
+  <script src="/common.js"></script>
+</body>
+</html>

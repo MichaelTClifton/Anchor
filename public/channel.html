@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Channel - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="channel-header"></div>
+    <div class="grid" id="grid"></div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const channelId = location.pathname.split('/').pop();
+
+    document.addEventListener('auth-ready', async () => {
+      let channel;
+      try {
+        channel = await api(`/api/channels/${encodeURIComponent(channelId)}`);
+      } catch (err) {
+        document.getElementById('channel-header').innerHTML =
+          `<div class="empty">${esc(err.message)}</div>`;
+        return;
+      }
+      document.title = `${channel.username} - Anchor`;
+      const isMe = ME && ME.id === channel.id;
+      document.getElementById('channel-header').innerHTML = `
+        <div class="channel-header">
+          <div class="avatar">${esc(channel.username[0].toUpperCase())}</div>
+          <div>
+            <h1>${esc(channel.username)}</h1>
+            <div class="stats">
+              <span id="sub-count">${subscriberLabel(channel.subscribers)}</span> &middot;
+              ${channel.video_count} videos &middot;
+              ${formatViews(channel.total_views)} total views &middot;
+              joined ${timeAgo(channel.created_at)}
+            </div>
+          </div>
+          ${isMe ? '' : `<button id="sub-btn" class="${channel.subscribed ? 'subscribed' : 'primary'}">
+            ${channel.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+        </div>
+      `;
+      const subBtn = document.getElementById('sub-btn');
+      if (subBtn) subBtn.onclick = async () => {
+        if (!ME) return openAuthModal('login');
+        const r = await api(`/api/channels/${channel.id}/subscribe`, { method: 'POST' });
+        subBtn.textContent = r.subscribed ? 'Subscribed' : 'Subscribe';
+        subBtn.className = r.subscribed ? 'subscribed' : 'primary';
+        document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
+      };
+
+      mountFeed(
+        cursor => api(`/api/channels/${encodeURIComponent(channel.id)}/videos${cursor ? `?cursor=${cursor}` : ''}`),
+        { emptyMsg: 'This channel has no videos yet.' });
+    }, { once: true });
+  </script>
+</body>
+</html>

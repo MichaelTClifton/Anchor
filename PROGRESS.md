@@ -1,0 +1,54 @@
+# Anchor build progress
+
+Feature expansion plan (full detail in the approved plan). Phases committed
+incrementally to `claude/video-hosting-site-32royz`.
+
+- [x] **Phase 0 — Schema + plumbing.** New tables (watch_history, watch_later,
+  tags, video_tags), FTS5 index + delete trigger + `reindexVideo()` backfill,
+  `category` column. (commit: schema + FTS)
+- [x] **Phase 1 — Tags + FTS search.** BM25 search, autocomplete, categories,
+  tags/category on upload, PATCH edit, tag-based related videos, /browse page.
+- [x] **Phase 2 — UI foundation.** Infinite scroll via `mountFeed()` on
+  home/search/browse/channel; left sidebar nav + mobile drawer; light/dark theme
+  toggle (persisted); toast + skeleton helpers; focus-visible + ARIA.
+- [x] **Phase 3 — History + feeds.** Watch history + resume + progress
+  reporting (sendBeacon), Watch Later toggle/list, personalized home +
+  continue-watching shelf, time-decayed Trending, and the History/Liked/
+  Watch Later/Subscriptions feed pages with resume bars + remove buttons.
+- [x] **Phase 4 — Player polish.** Keyboard shortcuts (space/k, j/l, arrows,
+  m, f, 0-9, </> speed), speed menu, picture-in-picture (feature-detected),
+  persisted theater mode, and autoplay-next from the related queue.
+
+- [x] **Phase 5 — Shorts.** `is_short` column (auto-detected at upload from
+  duration ≤ 60s + portrait/square, server-validated, ffprobe-corrected);
+  `/api/shorts` time-decayed engagement feed + `POST /api/videos/:id/view`;
+  shorts excluded from long-form discovery grids but kept in search/channel/
+  library lists with a badge; `/shorts[/:id]` vertical snap-scroll player
+  (autoplay-in-view, loop, like/mute/share rail, keyboard nav, infinite feed,
+  URL sync); Shorts shelf on home + sidebar link.
+
+- [x] **Phase 6 — Auth hardening + splash gate.** Splash landing page for
+  signed-out visitors (all pages/API/media gated behind a session); signup
+  requires email + confirmed 8-char password with a post-signup
+  "secure your account" step; passkeys (hand-rolled WebAuthn: CBOR/COSE parse,
+  node:crypto verify); TOTP 2FA with two-step login; password recovery via
+  dev-outbox email + /reset page (single-use 1h tokens, sessions revoked);
+  /settings page (email, password, 2FA, passkeys); dropzone display:block fix.
+
+- [x] **Phase 7 — Neon restyle.** Flat SVG icon system (ICONS/icon()/data-icon
+  in common.js) replacing every emoji; style.css rewritten as a hard-edged
+  cyberpunk theme: Helvetica Neue, zero border-radius, uppercase display text,
+  cyan (#00e5ff) + magenta (#ff2975) neon glow, faint background grid, square
+  avatars, neon favicon; light theme kept with subtler ink-on-paper values.
+
+**All phases complete.** ✅
+
+## Resume notes for the next session
+- App: Node/Express + better-sqlite3, vanilla frontend in `public/`, no build.
+- Run: `npm start` (ffmpeg present). Test users alice/bob password `secret123`.
+- Screenshot harness: import playwright from
+  `/opt/node22/lib/node_modules/playwright/index.js` (default export), launch
+  chromium headless. Do NOT use `pkill -f "node server.js"` inside a Bash tool
+  call — it terminates the call; start the server in its own call.
+- Each phase: implement, test with curl + a playwright screenshot, commit+push,
+  tick the box above.

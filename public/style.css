@@ -17,7 +17,6 @@
   --glow: 0 0 14px rgba(0, 229, 255, 0.35);
   --glow-soft: 0 0 8px rgba(0, 229, 255, 0.2);
   --glow2: 0 0 14px rgba(255, 41, 117, 0.35);
-  --grid-line: rgba(0, 229, 255, 0.035);
   --on-accent: #04040a;
 }
 
@@ -35,7 +34,6 @@
   --glow: 0 0 10px rgba(0, 126, 151, 0.3);
   --glow-soft: 0 0 6px rgba(0, 126, 151, 0.18);
   --glow2: 0 0 10px rgba(207, 14, 91, 0.3);
-  --grid-line: rgba(16, 16, 22, 0.04);
   --on-accent: #ffffff;
 }
 
@@ -53,11 +51,6 @@
 body {
   margin: 0;
   background: var(--bg);
-  /* faint circuit grid */
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 36px 36px;
   color: var(--text);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 15px;

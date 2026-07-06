@@ -35,6 +35,12 @@ incrementally to `claude/video-hosting-site-32royz`.
   dev-outbox email + /reset page (single-use 1h tokens, sessions revoked);
   /settings page (email, password, 2FA, passkeys); dropzone display:block fix.
 
+- [x] **Phase 7 — Neon restyle.** Flat SVG icon system (ICONS/icon()/data-icon
+  in common.js) replacing every emoji; style.css rewritten as a hard-edged
+  cyberpunk theme: Helvetica Neue, zero border-radius, uppercase display text,
+  cyan (#00e5ff) + magenta (#ff2975) neon glow, faint background grid, square
+  avatars, neon favicon; light theme kept with subtler ink-on-paper values.
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

@@ -33,8 +33,10 @@ comments — all backed by a single Node.js server and a SQLite database.
   watch history with a "continue watching" shelf
 - **Navigation** — left sidebar (Home, Trending, Subscriptions, History, Liked,
   Watch Later), category browsing, and infinite scroll across every feed
-- **UI** — responsive layout with a mobile drawer, a persisted light/dark theme
-  toggle, loading skeletons, toast notifications, and keyboard/focus accessibility
+- **UI** — a hard-edged neon design system (Helvetica Neue, boxy geometry,
+  cyan/magenta glow on near-black, flat single-stroke SVG icons) with a
+  responsive layout, mobile drawer, persisted light/dark theme toggle, loading
+  skeletons, toast notifications, and keyboard/focus accessibility
 - **Channels** — per-user channel pages with stats, plus subscribe/unsubscribe
 
 ## Getting started

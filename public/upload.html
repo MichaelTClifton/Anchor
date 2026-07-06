@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Upload - Anchor</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -14,7 +14,7 @@
       <div id="upload-body">
         <label class="dropzone" id="dropzone">
           <input type="file" id="file-input" accept="video/mp4,video/webm,video/ogg,video/quicktime">
-          <div style="font-size:40px">&#9875;</div>
+          <div class="dz-ic" data-icon="upload" aria-hidden="true"></div>
           <div><b>Click to choose a video</b> or drag one here</div>
           <div style="font-size:13px;margin-top:6px">MP4, WebM, OGG or MOV &middot; up to 1 GB</div>
         </label>
@@ -34,7 +34,7 @@
             <input id="tags" placeholder="e.g. music, piano, tutorial" maxlength="120"></div>
           <div class="field" id="short-field" hidden>
             <label class="check-row"><input type="checkbox" id="is-short" checked>
-              <span>&#9889; Publish as a <b>Short</b> &mdash; this clip is under a minute and
+              <span><span class="ic-inline" data-icon="bolt"></span> Publish as a <b>Short</b> &mdash; this clip is under a minute and
               vertical, so it can appear in the swipeable Shorts feed</span></label></div>
           <div class="field"><label>Thumbnail (auto-captured from your video)</label>
             <img class="thumb-preview" id="thumb-preview" alt="" hidden>

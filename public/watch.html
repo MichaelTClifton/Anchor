@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Anchor</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>&#9875;</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -52,8 +52,8 @@
               <option value="1.25">1.25&times;</option><option value="1.5">1.5&times;</option>
               <option value="1.75">1.75&times;</option><option value="2">2&times;</option>
             </select></label>
-          <button id="pip-btn" class="tool-btn" title="Mini-player (i)" hidden>&#10696; Mini-player</button>
-          <button id="theater-btn" class="tool-btn" title="Theater mode (t)">&#9645; Theater</button>
+          <button id="pip-btn" class="tool-btn" title="Mini-player (i)" hidden>${icon('pip')} Mini-player</button>
+          <button id="theater-btn" class="tool-btn" title="Theater mode (t)">${icon('theater')} Theater</button>
         </div>
         <div class="watch-title">${esc(v.title)}</div>
         <div class="watch-bar">
@@ -70,9 +70,9 @@
             <select id="quality" title="Quality" hidden></select>
             <div class="pill-group">
               <button id="like-btn" class="${v.my_like === 1 ? 'active' : ''}">
-                &#128077; <span id="like-count">${formatViews(v.likes)}</span></button>
+                ${icon('thumb')} <span id="like-count">${formatViews(v.likes)}</span></button>
               <button id="dislike-btn" class="${v.my_like === -1 ? 'active' : ''}">
-                &#128078; <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
+                ${icon('thumbdown')} <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
             </div>
             ${ME ? `<button id="wl-btn2" class="${v.in_watch_later ? 'active' : ''}">${v.in_watch_later ? '✓ Saved' : '+ Watch Later'}</button>` : ''}
             ${v.is_owner ? '<button id="edit-btn">Edit</button><button class="danger" id="delete-btn">Delete video</button>' : ''}
@@ -80,7 +80,7 @@
         </div>
         <div id="edit-panel" hidden></div>
         <div class="description">
-          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}<span id="processing-note" ${v.status === 'processing' ? '' : 'hidden'}> &middot; &#9881; preparing more qualities&hellip;</span></div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
+          <div class="views-line">${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}<span id="processing-note" ${v.status === 'processing' ? '' : 'hidden'}> &middot; preparing more qualities&hellip;</span></div>${esc(v.description) || '<span style="color:var(--text-dim)">No description.</span>'}
         </div>
         ${(v.tags && v.tags.length) || v.category ? `<div class="tag-row">
           ${v.category ? `<a class="chip cat" href="/browse?category=${encodeURIComponent(v.category)}">${esc(v.category)}</a>` : ''}

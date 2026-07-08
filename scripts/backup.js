@@ -1,4 +1,4 @@
-// Cold-safe snapshot of the DB + uploaded media into a timestamped folder
+// Hot (online) snapshot of the DB + uploaded media into a timestamped folder
 // under backups/. Run manually (`npm run backup`) or from cron; nothing else
 // in the app depends on this file.
 //

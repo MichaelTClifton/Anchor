@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moderation - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>Moderation</h1>
+
+    <div class="panel admin-panel">
+      <h2>Open reports</h2>
+      <div id="report-queue"><p class="modal-note">Loading&hellip;</p></div>
+    </div>
+
+    <div class="panel admin-panel">
+      <h2>Users</h2>
+      <form id="user-search" class="admin-search">
+        <input name="q" type="search" placeholder="Search usernames" aria-label="Search usernames">
+        <button>Search</button>
+      </form>
+      <div id="user-list"></div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    const REASON_LABELS = {
+      spam: 'Spam', harassment: 'Harassment / hate', sexual: 'Sexual content',
+      violence: 'Violence', copyright: 'Copyright', other: 'Other',
+    };
+
+    async function loadReports() {
+      const queue = document.getElementById('report-queue');
+      const { reports } = await api('/api/admin/reports');
+      if (!reports.length) {
+        queue.innerHTML = '<p class="modal-note">No open reports. All clear.</p>';
+        return;
+      }
+      queue.innerHTML = reports.map(r => {
+        const isVideo = r.target_type === 'video';
+        const gone = isVideo ? r.video_title === null : r.comment_text === null;
+        const offender = isVideo
+          ? { id: r.video_owner_id, name: r.video_owner_name, suspended: r.video_owner_suspended }
+          : { id: r.comment_author_id, name: r.comment_author_name, suspended: r.comment_author_suspended };
+        const context = gone
+          ? '<div class="modal-note">This content no longer exists.</div>'
+          : isVideo
+            ? `<a class="report-target" href="/watch/${esc(r.target_id)}">
+                 ${r.video_thumbnail ? `<img src="/thumbs/${esc(r.video_thumbnail)}" alt="">` : ''}
+                 <span><b>${esc(r.video_title)}</b>${r.video_hidden ? ' <span class="chip cat">HIDDEN</span>' : ''}
+                   <span class="modal-note">by ${esc(offender.name)}</span></span></a>`
+            : `<div class="report-target">
+                 <span>${icon('comment')} <i>&ldquo;${esc(r.comment_text)}&rdquo;</i>
+                   <span class="modal-note">by ${esc(offender.name)} &middot;
+                     <a href="/watch/${esc(r.comment_video_id)}" class="linkish">view video</a></span></span></div>`;
+        return `<div class="report-card" data-id="${r.id}" data-target="${r.target_type}:${esc(r.target_id)}">
+          <div class="report-head">
+            <span class="chip">${REASON_LABELS[r.reason] || esc(r.reason)}</span>
+            <span class="modal-note">reported by ${esc(r.reporter_name)} &middot; ${timeAgo(r.created_at)}</span>
+          </div>
+          ${r.details ? `<div class="report-details">${esc(r.details)}</div>` : ''}
+          ${context}
+          <div class="report-actions">
+            <button data-act="dismiss">Dismiss</button>
+            ${gone ? '' : `<button class="danger" data-act="remove">
+              ${isVideo ? (r.video_hidden ? 'Already hidden' : 'Remove video') : 'Delete comment'}</button>`}
+            ${offender.id ? `<button class="danger" data-act="${offender.suspended ? 'unsuspend' : 'suspend'}"
+              data-user="${offender.id}">${offender.suspended ? 'Unsuspend' : 'Suspend'} ${esc(offender.name)}</button>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+
+      for (const btn of queue.querySelectorAll('button[data-act]')) {
+        btn.onclick = () => act(btn);
+      }
+    }
+
+    async function act(btn) {
+      const card = btn.closest('.report-card');
+      const reportId = card.dataset.id;
+      const [type, targetId] = card.dataset.target.split(/:(.*)/s);
+      try {
+        if (btn.dataset.act === 'dismiss') {
+          await api(`/api/admin/reports/${reportId}/dismiss`, { method: 'POST' });
+          toast('Report dismissed');
+        } else if (btn.dataset.act === 'remove') {
+          if (type === 'video') {
+            await api(`/api/admin/videos/${encodeURIComponent(targetId)}/hide`, { method: 'POST' });
+            toast('Video removed');
+          } else {
+            await api(`/api/comments/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+            toast('Comment deleted');
+          }
+        } else {
+          await api(`/api/admin/users/${btn.dataset.user}/${btn.dataset.act}`, { method: 'POST' });
+          toast(btn.dataset.act === 'suspend' ? 'User suspended' : 'User unsuspended');
+          loadReports();
+          loadUsers();
+          return;
+        }
+        // The server group-resolves every open report for this target.
+        for (const c of document.querySelectorAll(`.report-card[data-target="${CSS.escape(card.dataset.target)}"]`)) {
+          c.remove();
+        }
+        if (!document.querySelector('.report-card')) loadReports();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function loadUsers(q = '') {
+      const list = document.getElementById('user-list');
+      const { users } = await api('/api/admin/users' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+      list.innerHTML = users.map(u => `
+        <div class="passkey-row">
+          <span>${icon('user')} <a href="/channel/${u.id}"><b>${esc(u.username)}</b></a>
+            <span class="modal-note">${u.role === 'admin' ? 'admin &middot; ' : ''}${u.video_count}
+              video${u.video_count === 1 ? '' : 's'} &middot; joined ${timeAgo(u.created_at)}
+              ${u.suspended ? ' &middot; SUSPENDED' : ''}</span></span>
+          ${u.role === 'admin' || (ME && u.id === ME.id) ? '' :
+            `<button class="danger" data-user="${u.id}" data-act="${u.suspended ? 'unsuspend' : 'suspend'}">
+              ${u.suspended ? 'Unsuspend' : 'Suspend'}</button>`}
+        </div>`).join('') || '<p class="modal-note">No users matched.</p>';
+      for (const btn of list.querySelectorAll('button[data-user]')) {
+        btn.onclick = async () => {
+          try {
+            await api(`/api/admin/users/${btn.dataset.user}/${btn.dataset.act}`, { method: 'POST' });
+            toast(btn.dataset.act === 'suspend' ? 'User suspended' : 'User unsuspended');
+            loadUsers(new FormData(document.getElementById('user-search')).get('q') || '');
+          } catch (e) { toast(e.message, 'error'); }
+        };
+      }
+    }
+
+    document.getElementById('user-search').onsubmit = e => {
+      e.preventDefault();
+      loadUsers(new FormData(e.target).get('q') || '');
+    };
+
+    document.addEventListener('auth-ready', () => {
+      if (!ME || ME.role !== 'admin') { location.href = '/'; return; }
+      loadReports().catch(e => toast(e.message, 'error'));
+      loadUsers().catch(e => toast(e.message, 'error'));
+    }, { once: true });
+  </script>
+</body>
+</html>

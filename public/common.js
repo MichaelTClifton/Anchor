@@ -41,6 +41,7 @@ const ICONS = {
   user: '<circle cx="12" cy="7.5" r="3.5"/><path d="M4 21c0-4 3.5-6.5 8-6.5s8 2.5 8 6.5"/>',
   check: '<path d="M4 12.5L10 18 20 6"/>',
   upload: '<path d="M12 16V3M7 8l5-5 5 5M4 14v7h16v-7"/>',
+  flag: '<path d="M5 21V3h14l-3 5 3 5H5"/>',
 };
 
 function icon(name, cls = '') {
@@ -420,6 +421,9 @@ async function refreshHeaderActions() {
     el.innerHTML = `
       <button class="primary" onclick="location.href='/upload'">${icon('upload')} Upload</button>
       <a class="me" href="/channel/${ME.id}">${icon('user')} <b>${esc(ME.username)}</b></a>
+      ${ME.role === 'admin' ? `<a class="icon-btn admin-link" href="/admin" title="Moderation queue"
+        aria-label="Moderation queue">${icon('shield')}${ME.open_reports
+          ? `<span class="badge">${ME.open_reports > 99 ? '99+' : ME.open_reports}</span>` : ''}</a>` : ''}
       <a class="icon-btn" href="/settings" title="Account settings" aria-label="Account settings">${icon('gear')}</a>
       <button id="logout-btn">Sign out</button>
     `;
@@ -432,6 +436,67 @@ async function refreshHeaderActions() {
     el.querySelector('#signin-btn').onclick = () => openAuthModal('login');
   }
   document.dispatchEvent(new CustomEvent('auth-ready'));
+}
+
+// ---------- report modal ----------
+// Reporting works anywhere content renders (watch page, shorts rail,
+// comments); signed-out viewers are routed to sign-in first.
+
+const REPORT_REASONS = [
+  ['spam', 'Spam or misleading'],
+  ['harassment', 'Harassment or hate'],
+  ['sexual', 'Sexual content'],
+  ['violence', 'Violent or dangerous content'],
+  ['copyright', 'Copyright infringement'],
+  ['other', 'Something else'],
+];
+
+function openReportModal(targetType, targetId) {
+  if (!ME) return openAuthModal('login');
+  closeReportModal();
+  document.body.insertAdjacentHTML('beforeend', `
+    <div class="modal-backdrop" id="report-modal">
+      <div class="modal">
+        <h2>Report ${targetType === 'comment' ? 'comment' : 'video'}</h2>
+        <form id="report-form">
+          <div class="report-reasons">
+            ${REPORT_REASONS.map(([value, label]) => `
+              <label class="check-row"><input type="radio" name="reason" value="${value}" required>
+                <span>${label}</span></label>`).join('')}
+          </div>
+          <div class="field" style="margin-top:14px"><label>Details (optional)</label>
+            <textarea name="details" rows="3" maxlength="500"></textarea></div>
+          <button class="primary" style="width:100%">Submit report</button>
+          <div class="error-msg" id="report-error"></div>
+        </form>
+        <div class="switch"><a id="report-cancel">Cancel</a></div>
+      </div>
+    </div>`);
+  const backdrop = document.getElementById('report-modal');
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) closeReportModal(); });
+  document.getElementById('report-cancel').onclick = closeReportModal;
+  document.getElementById('report-form').onsubmit = async e => {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    try {
+      await api('/api/report', {
+        method: 'POST',
+        json: {
+          target_type: targetType, target_id: String(targetId),
+          reason: data.get('reason'), details: data.get('details'),
+        },
+      });
+      closeReportModal();
+      toast('Report submitted — thank you');
+    } catch (err) {
+      document.getElementById('report-error').textContent = err.message;
+    }
+  };
+}
+
+function closeReportModal() {
+  const el = document.getElementById('report-modal');
+  if (el) el.remove();
 }
 
 // ---------- passkeys (WebAuthn client side) ----------
@@ -614,6 +679,9 @@ function registerView(box) {
         <input name="password" type="password" required minlength="8" autocomplete="new-password"></div>
       <div class="field"><label>Confirm password</label>
         <input name="password2" type="password" required minlength="8" autocomplete="new-password"></div>
+      <label class="check-row terms-row"><input type="checkbox" name="terms" required>
+        <span>I agree to the <a href="/guidelines" target="_blank" class="linkish">Community
+        Guidelines</a></span></label>
       <button class="primary" style="width:100%">Create account</button>
       <div class="error-msg" id="auth-error"></div>
     </form>
@@ -631,6 +699,7 @@ function registerView(box) {
         json: {
           username: form.get('username'), email: form.get('email'),
           password: form.get('password'), password2: form.get('password2'),
+          terms: form.get('terms') === 'on',
         },
       });
       securityView(box);

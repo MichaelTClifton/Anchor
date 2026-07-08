@@ -42,6 +42,7 @@
               ${icon('comment')}<span class="n">${formatViews(v.comment_count)}</span></a>
             <button class="short-btn mute-btn" aria-label="Toggle sound">${icon(muted ? 'mute' : 'sound')}</button>
             <button class="short-btn share-btn" aria-label="Copy link">${icon('share')}<span class="n">Share</span></button>
+            <button class="short-btn report-btn" aria-label="Report">${icon('flag')}<span class="n">Report</span></button>
           </div>
         </div>`;
 
@@ -74,6 +75,7 @@
         } catch (err) { toast(err.message, 'error'); }
       };
       el.querySelector('.mute-btn').onclick = () => setMuted(!muted);
+      el.querySelector('.report-btn').onclick = () => openReportModal('video', v.id);
       el.querySelector('.share-btn').onclick = async () => {
         try {
           await navigator.clipboard.writeText(`${location.origin}/shorts/${v.id}`);

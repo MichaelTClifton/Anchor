@@ -53,6 +53,17 @@ incrementally to `claude/video-hosting-site-32royz`.
   `db.backup()` + media copy into `backups/<timestamp>/`); bumped multer to
   patch a DoS advisory (GHSA-72gw-mp4g-v24j).
 
+- [x] **Phase 9 — Trust & safety (Tier 1).** reports table (partial unique
+  index for open-report dedup) + videos.hidden + users.role/suspended;
+  FTS deindex-on-hide via `AND v.hidden = 0` in reindexStmt (hide/restore =
+  reindexVideo); report buttons on watch/shorts/comments with a reason modal;
+  /admin review queue (dismiss / remove / suspend, group-resolves per target);
+  suspension enforced in getUser (sessions die instantly) + 403 on all three
+  login paths; hidden filter across every feed/search/interaction endpoint;
+  /guidelines page + required terms checkbox at signup;
+  `npm run make-admin -- <user>`; limiter tuning (skipSuccessfulRequests on
+  auth, split comment/upload/report limiters).
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

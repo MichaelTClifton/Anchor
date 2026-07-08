@@ -55,6 +55,9 @@
           <button id="pip-btn" class="tool-btn" title="Mini-player (i)" hidden>${icon('pip')} Mini-player</button>
           <button id="theater-btn" class="tool-btn" title="Theater mode (t)">${icon('theater')} Theater</button>
         </div>
+        ${v.hidden ? `<div class="removed-banner">This video has been removed for violating the
+          Community Guidelines and is no longer visible to others.
+          ${ME && ME.role === 'admin' ? '<button id="restore-btn">Restore video</button>' : ''}</div>` : ''}
         <div class="watch-title">${esc(v.title)}</div>
         <div class="watch-bar">
           <div class="channel-row">
@@ -75,6 +78,7 @@
                 ${icon('thumbdown')} <span id="dislike-count">${formatViews(v.dislikes)}</span></button>
             </div>
             ${ME ? `<button id="wl-btn2" class="${v.in_watch_later ? 'active' : ''}">${v.in_watch_later ? '✓ Saved' : '+ Watch Later'}</button>` : ''}
+            ${v.is_owner ? '' : `<button id="report-btn" title="Report this video">${icon('flag')} Report</button>`}
             ${v.is_owner ? '<button id="edit-btn">Edit</button><button class="danger" id="delete-btn">Delete video</button>' : ''}
           </div>
         </div>
@@ -95,6 +99,17 @@
 
       document.getElementById('like-btn').onclick = () => sendLike(1);
       document.getElementById('dislike-btn').onclick = () => sendLike(-1);
+
+      const reportBtn = document.getElementById('report-btn');
+      if (reportBtn) reportBtn.onclick = () => openReportModal('video', v.id);
+      const restoreBtn = document.getElementById('restore-btn');
+      if (restoreBtn) restoreBtn.onclick = async () => {
+        try {
+          await api(`/api/admin/videos/${encodeURIComponent(v.id)}/restore`, { method: 'POST' });
+          toast('Video restored');
+          location.reload();
+        } catch (e) { toast(e.message, 'error'); }
+      };
 
       document.getElementById('quality').onchange = switchQuality;
       renderQuality();
@@ -356,7 +371,10 @@
             <div class="who">${esc(c.username)}<span class="when">${timeAgo(c.created_at)}</span></div>
             <div class="text">${esc(c.text)}</div>
           </div>
-          ${ME && (ME.id === c.user_id || video.is_owner)
+          ${ME && ME.id !== c.user_id
+            ? `<button class="icon-btn" title="Report comment" aria-label="Report comment"
+                onclick="openReportModal('comment', ${c.id})">${icon('flag')}</button>` : ''}
+          ${ME && (ME.id === c.user_id || video.is_owner || ME.role === 'admin')
             ? `<button class="danger" onclick="deleteComment(${c.id})">Delete</button>` : ''}
         </div>
       `).join('') || '<div style="color:var(--text-dim)">No comments yet.</div>';

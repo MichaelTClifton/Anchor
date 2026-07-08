@@ -63,16 +63,27 @@ app.use(express.json());
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
+  // Only failures burn the budget: a NAT'd household of legitimate users
+  // (or one person signing in, then redeeming a 2FA code) shouldn't get
+  // locked out by successful requests.
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
 });
-const writeLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Slow down — too many requests. Please try again shortly.' },
+// Separate instances per concern so heavy commenting can't block an upload.
+const slowDown = { error: 'Slow down — too many requests. Please try again shortly.' };
+const commentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 30,
+  standardHeaders: true, legacyHeaders: false, message: slowDown,
+});
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 10,
+  standardHeaders: true, legacyHeaders: false, message: slowDown,
+});
+const reportLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 20,
+  standardHeaders: true, legacyHeaders: false, message: slowDown,
 });
 
 // Resolve the viewer once per request. Signed-out visitors only ever reach
@@ -83,7 +94,7 @@ const pageAuth = (req, res, next) => (req.user ? next() : res.redirect('/'));
 const staticAuth = (req, res, next) => (req.user ? next() : res.status(401).end());
 app.use((req, res, next) => {
   if (!req.user && /\.html$/.test(req.path)
-      && !['/splash.html', '/reset.html'].includes(req.path)) {
+      && !['/splash.html', '/reset.html', '/guidelines.html'].includes(req.path)) {
     return res.redirect('/');
   }
   next();
@@ -112,14 +123,22 @@ function getUser(req) {
   const cookie = req.headers.cookie || '';
   const match = cookie.match(/(?:^|;\s*)session=([a-f0-9]{48})/);
   if (!match) return null;
+  // The suspended filter here is the enforcement point for account
+  // suspension: existing sessions die on their very next request.
   return db.prepare(`
-    SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token = ?
+    SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token = ? AND u.suspended = 0
   `).get(match[1]) || null;
 }
 
 function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'You must be signed in to do that.' });
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'You must be signed in to do that.' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
   next();
 }
 
@@ -142,6 +161,9 @@ app.post('/api/register', authLimiter, (req, res) => {
   if (password !== password2) {
     return res.status(400).json({ error: 'The two passwords do not match.' });
   }
+  if (req.body.terms !== true) {
+    return res.status(400).json({ error: 'You must agree to the Community Guidelines to create an account.' });
+  }
   try {
     const info = db.prepare('INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)')
       .run(username, hashPassword(password), email);
@@ -160,6 +182,8 @@ app.post('/api/login', authLimiter, (req, res) => {
   if (!user || !verifyPassword(password, user.password_hash)) {
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
+  // Checked only after the password verifies, so this can't probe accounts.
+  if (user.suspended) return res.status(403).json({ error: 'This account is suspended.' });
   if (user.totp_enabled) {
     // Two-step sign-in: the password alone earns a short-lived ticket, not a
     // session; the authenticator code redeems it below.
@@ -182,6 +206,7 @@ app.post('/api/login/totp', authLimiter, (req, res) => {
   if (!user || !authlib.verifyTotp(user.totp_secret, req.body.code)) {
     return res.status(401).json({ error: 'That code is not right. Try again.' });
   }
+  if (user.suspended) return res.status(403).json({ error: 'This account is suspended.' });
   authlib.dropChallenge(ticket);
   startSession(req, res, user.id);
   res.json({ id: user.id, username: user.username });
@@ -206,7 +231,11 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  res.json({ user: getUser(req) });
+  const user = getUser(req);
+  if (user && user.role === 'admin') {
+    user.open_reports = db.prepare("SELECT COUNT(*) AS n FROM reports WHERE status = 'open'").get().n;
+  }
+  res.json({ user });
 });
 
 // ---------- passkeys (WebAuthn) ----------
@@ -281,7 +310,8 @@ app.post('/api/passkeys/login/verify', authLimiter, (req, res) => {
       storedKey: passkey.public_key, storedCounter: passkey.counter,
     });
     db.prepare('UPDATE passkeys SET counter = ? WHERE id = ?').run(counter, passkey.id);
-    const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(passkey.user_id);
+    const user = db.prepare('SELECT id, username, suspended FROM users WHERE id = ?').get(passkey.user_id);
+    if (user.suspended) return res.status(403).json({ error: 'This account is suspended.' });
     startSession(req, res, user.id);
     res.json({ id: user.id, username: user.username });
   } catch (e) {
@@ -426,7 +456,7 @@ const upload = multer({
   },
 });
 
-app.post('/api/videos', writeLimiter, requireAuth,
+app.post('/api/videos', uploadLimiter, requireAuth,
   upload.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]),
   (req, res) => {
     const videoFile = req.files && req.files.video && req.files.video[0];
@@ -464,7 +494,7 @@ app.post('/api/videos', writeLimiter, requireAuth,
 // ---------- video listing / detail ----------
 
 const VIDEO_COLS = `v.id, v.title, v.description, v.filename, v.thumbnail, v.duration,
-         v.views, v.created_at, v.status, v.category, v.is_short,
+         v.views, v.created_at, v.status, v.category, v.is_short, v.hidden,
          u.id AS channel_id, u.username AS channel_name`;
 const VIDEO_SELECT = `SELECT ${VIDEO_COLS} FROM videos v JOIN users u ON u.id = v.user_id`;
 
@@ -501,7 +531,7 @@ function pageResult(rows, limit, keyFn) {
 
 // Keyset-paginated reverse-chronological feed with an optional extra filter.
 function chronoFeed(extraWhere, params, cursor, limit) {
-  const clauses = [];
+  const clauses = ['v.hidden = 0'];
   const args = [...params];
   if (extraWhere) clauses.push(extraWhere);
   if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
@@ -557,13 +587,13 @@ function relatedVideos(videoId) {
     JOIN video_tags vt2 ON vt2.tag_id = vt1.tag_id AND vt2.video_id <> vt1.video_id
     JOIN videos v ON v.id = vt2.video_id
     JOIN users u ON u.id = v.user_id
-    WHERE vt1.video_id = ? AND v.is_short = 0
+    WHERE vt1.video_id = ? AND v.is_short = 0 AND v.hidden = 0
     GROUP BY v.id
     ORDER BY shared DESC, v.views DESC, v.created_at DESC
     LIMIT 12`).all(videoId);
   if (out.length < 12) {
     const have = new Set([videoId, ...out.map(v => v.id)]);
-    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ? AND v.is_short = 0
+    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ? AND v.is_short = 0 AND v.hidden = 0
       ORDER BY v.views DESC, v.created_at DESC LIMIT 40`).all(videoId);
     for (const f of fillers) {
       if (out.length >= 12) break;
@@ -588,7 +618,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
       FROM videos_fts
       JOIN videos v ON v.id = videos_fts.video_id
       JOIN users u ON u.id = v.user_id
-      WHERE videos_fts MATCH ?
+      WHERE videos_fts MATCH ? AND v.hidden = 0
       ORDER BY ${BM25}, v.created_at DESC
       LIMIT ? OFFSET ?`).all(match, limit + 1, offset);
     return res.json(pageResult(rows, limit, () => ({ o: offset + limit })));
@@ -614,7 +644,7 @@ function personalizedHome(me, cursor, limit) {
   const finished = new Set(db.prepare('SELECT video_id FROM watch_history WHERE user_id = ? AND completed = 1')
     .all(me.id).map(r => r.video_id));
   const tagsOf = db.prepare('SELECT tag_id FROM video_tags WHERE video_id = ?');
-  const rows = db.prepare(`${VIDEO_SELECT} WHERE v.is_short = 0 ORDER BY v.created_at DESC LIMIT 300`).all();
+  const rows = db.prepare(`${VIDEO_SELECT} WHERE v.is_short = 0 AND v.hidden = 0 ORDER BY v.created_at DESC LIMIT 300`).all();
   const now = Math.floor(Date.now() / 1000);
   for (const r of rows) {
     let score = 1 / ((now - r.created_at) / 86400 + 2);
@@ -651,7 +681,7 @@ app.get('/api/search/suggest', requireAuth, (req, res) => {
 app.get('/api/categories', requireAuth, (req, res) => {
   const counts = Object.fromEntries(db.prepare(
     `SELECT category, COUNT(*) AS n FROM videos
-     WHERE category IS NOT NULL AND category <> '' GROUP BY category`).all()
+     WHERE category IS NOT NULL AND category <> '' AND hidden = 0 GROUP BY category`).all()
     .map(c => [c.category, c.n]));
   res.json({ categories: CATEGORIES.map(name => ({ name, count: counts[name] || 0 })) });
 });
@@ -659,10 +689,16 @@ app.get('/api/categories', requireAuth, (req, res) => {
 app.get('/api/videos/:id', requireAuth, (req, res) => {
   const video = db.prepare(`${VIDEO_SELECT} WHERE v.id = ?`).get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
-  db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(video.id);
-  video.views += 1;
-
   const me = getUser(req);
+  // A taken-down video 404s for everyone except its owner and admins, who
+  // instead see it flagged so the page can show a removal notice.
+  const canSeeHidden = me && (me.id === video.user_id || me.role === 'admin');
+  if (video.hidden && !canSeeHidden) return res.status(404).json({ error: 'Video not found.' });
+  if (!video.hidden) {
+    db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(video.id);
+    video.views += 1;
+  }
+
   const counts = db.prepare(`
     SELECT COALESCE(SUM(value = 1), 0) AS likes, COALESCE(SUM(value = -1), 0) AS dislikes
     FROM likes WHERE video_id = ?
@@ -719,8 +755,11 @@ app.patch('/api/videos/:id', requireAuth, (req, res) => {
 // Polled by the watch page while a video is processing; unlike the detail
 // endpoint this does not count a view.
 app.get('/api/videos/:id/status', requireAuth, (req, res) => {
-  const video = db.prepare('SELECT id, status, duration FROM videos WHERE id = ?').get(req.params.id);
+  const video = db.prepare('SELECT id, user_id, status, duration, hidden FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
+  if (video.hidden && !(req.user.id === video.user_id || req.user.role === 'admin')) {
+    return res.status(404).json({ error: 'Video not found.' });
+  }
   res.json({ status: video.status, duration: video.duration, renditions: getRenditions(video.id) });
 });
 
@@ -730,6 +769,7 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
   if (video.user_id !== req.user.id) return res.status(403).json({ error: 'You can only delete your own videos.' });
   const renditions = getRenditions(video.id);
   db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
+  resolveReportsFor('video', video.id, 'actioned', req.user.id);
   fs.unlink(path.join(UPLOADS_DIR, video.filename), () => {});
   for (const r of renditions) fs.unlink(path.join(UPLOADS_DIR, r.filename), () => {});
   if (video.thumbnail) fs.unlink(path.join(THUMBS_DIR, video.thumbnail), () => {});
@@ -739,7 +779,7 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
 // ---------- likes ----------
 
 app.post('/api/videos/:id/like', requireAuth, (req, res) => {
-  const video = db.prepare('SELECT id FROM videos WHERE id = ?').get(req.params.id);
+  const video = db.prepare('SELECT id FROM videos WHERE id = ? AND hidden = 0').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   const value = parseInt(req.body.value, 10);
   if (![1, -1, 0].includes(value)) return res.status(400).json({ error: 'value must be 1, -1 or 0.' });
@@ -769,8 +809,8 @@ app.get('/api/videos/:id/comments', requireAuth, (req, res) => {
   res.json({ comments: rows });
 });
 
-app.post('/api/videos/:id/comments', writeLimiter, requireAuth, (req, res) => {
-  const video = db.prepare('SELECT id FROM videos WHERE id = ?').get(req.params.id);
+app.post('/api/videos/:id/comments', commentLimiter, requireAuth, (req, res) => {
+  const video = db.prepare('SELECT id FROM videos WHERE id = ? AND hidden = 0').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   const text = String(req.body.text || '').trim().slice(0, 2000);
   if (!text) return res.status(400).json({ error: 'Comment cannot be empty.' });
@@ -789,10 +829,12 @@ app.delete('/api/comments/:id', requireAuth, (req, res) => {
     JOIN videos v ON v.id = c.video_id WHERE c.id = ?
   `).get(req.params.id);
   if (!comment) return res.status(404).json({ error: 'Comment not found.' });
-  if (comment.user_id !== req.user.id && comment.video_owner_id !== req.user.id) {
+  if (comment.user_id !== req.user.id && comment.video_owner_id !== req.user.id
+      && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'You can only delete your own comments, or comments on your own videos.' });
   }
   db.prepare('DELETE FROM comments WHERE id = ?').run(comment.id);
+  resolveReportsFor('comment', comment.id, 'actioned', req.user.id);
   res.json({ ok: true });
 });
 
@@ -807,7 +849,7 @@ app.get('/api/channels/:id', requireAuth, (req, res) => {
   channel.subscribed = me
     ? !!db.prepare('SELECT 1 FROM subscriptions WHERE subscriber_id = ? AND channel_id = ?').get(me.id, channel.id)
     : false;
-  channel.video_count = db.prepare('SELECT COUNT(*) AS n FROM videos WHERE user_id = ?').get(channel.id).n;
+  channel.video_count = db.prepare('SELECT COUNT(*) AS n FROM videos WHERE user_id = ? AND hidden = 0').get(channel.id).n;
   res.json(channel);
 });
 
@@ -838,7 +880,7 @@ app.post('/api/channels/:id/subscribe', requireAuth, (req, res) => {
 
 app.post('/api/history', requireAuth, (req, res) => {
   const videoId = String(req.body.video_id || '');
-  if (!db.prepare('SELECT 1 FROM videos WHERE id = ?').get(videoId)) {
+  if (!db.prepare('SELECT 1 FROM videos WHERE id = ? AND hidden = 0').get(videoId)) {
     return res.status(404).json({ error: 'Video not found.' });
   }
   const position = Math.max(0, parseFloat(req.body.position) || 0);
@@ -856,7 +898,7 @@ app.post('/api/history', requireAuth, (req, res) => {
 app.get('/api/history', requireAuth, (req, res) => {
   const limit = clampLimit(req.query.limit);
   const cursor = decodeCursor(req.query.cursor);
-  const clauses = ['h.user_id = ?'];
+  const clauses = ['h.user_id = ?', 'v.hidden = 0'];
   const args = [req.user.id];
   if (req.query.incomplete === '1') clauses.push('h.completed = 0 AND h.position > 5');
   if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
@@ -879,7 +921,7 @@ app.delete('/api/history/:id', requireAuth, (req, res) => {
 
 app.post('/api/watch-later', requireAuth, (req, res) => {
   const videoId = String(req.body.video_id || '');
-  if (!db.prepare('SELECT 1 FROM videos WHERE id = ?').get(videoId)) {
+  if (!db.prepare('SELECT 1 FROM videos WHERE id = ? AND hidden = 0').get(videoId)) {
     return res.status(404).json({ error: 'Video not found.' });
   }
   const existing = db.prepare('SELECT 1 FROM watch_later WHERE user_id = ? AND video_id = ?')
@@ -900,7 +942,7 @@ app.delete('/api/watch-later/:id', requireAuth, (req, res) => {
 app.get('/api/watch-later', requireAuth, (req, res) => {
   const limit = clampLimit(req.query.limit);
   const cursor = decodeCursor(req.query.cursor);
-  const clauses = ['w.user_id = ?'];
+  const clauses = ['w.user_id = ?', 'v.hidden = 0'];
   const args = [req.user.id];
   if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
     clauses.push('(w.created_at < ? OR (w.created_at = ? AND v.id < ?))');
@@ -918,7 +960,7 @@ app.get('/api/watch-later', requireAuth, (req, res) => {
 app.get('/api/liked', requireAuth, (req, res) => {
   const limit = clampLimit(req.query.limit);
   const cursor = decodeCursor(req.query.cursor);
-  const clauses = ['l.user_id = ?', 'l.value = 1'];
+  const clauses = ['l.user_id = ?', 'l.value = 1', 'v.hidden = 0'];
   const args = [req.user.id];
   if (cursor && Number.isFinite(cursor.t) && cursor.id != null) {
     clauses.push('(v.created_at < ? OR (v.created_at = ? AND v.id < ?))');
@@ -948,7 +990,7 @@ app.get('/api/trending', requireAuth, (req, res) => {
       (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id AND l.value = 1) AS like_count,
       (SELECT COUNT(*) FROM comments c WHERE c.video_id = v.id) AS comment_count
     FROM videos v JOIN users u ON u.id = v.user_id
-    WHERE v.created_at > ? AND v.is_short = 0`).all(now - 60 * 60 * 24 * 30);
+    WHERE v.created_at > ? AND v.is_short = 0 AND v.hidden = 0`).all(now - 60 * 60 * 24 * 30);
   for (const r of rows) {
     const ageHours = (now - r.created_at) / 3600;
     r._score = (r.views + 3 * r.like_count + 2 * r.comment_count) / Math.pow(ageHours + 2, 1.5);
@@ -974,7 +1016,7 @@ app.get('/api/shorts', requireAuth, (req, res) => {
       (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id AND l.value = 1) AS like_count,
       (SELECT COUNT(*) FROM comments c WHERE c.video_id = v.id) AS comment_count
     FROM videos v JOIN users u ON u.id = v.user_id
-    WHERE v.is_short = 1`).all();
+    WHERE v.is_short = 1 AND v.hidden = 0`).all();
   for (const r of rows) {
     const ageHours = (now - r.created_at) / 3600;
     r._score = (r.views + 3 * r.like_count + 2 * r.comment_count) / Math.pow(ageHours + 2, 1.5);
@@ -994,9 +1036,117 @@ app.get('/api/shorts', requireAuth, (req, res) => {
 // The shorts player never hits GET /api/videos/:id (which is what counts a
 // view elsewhere), so it reports views here once a short actually plays.
 app.post('/api/videos/:id/view', requireAuth, (req, res) => {
-  const info = db.prepare('UPDATE videos SET views = views + 1 WHERE id = ?').run(req.params.id);
+  const info = db.prepare('UPDATE videos SET views = views + 1 WHERE id = ? AND hidden = 0').run(req.params.id);
   if (!info.changes) return res.status(404).json({ error: 'Video not found.' });
   res.json({ ok: true });
+});
+
+// ---------- reports & moderation ----------
+
+const REPORT_REASONS = new Set(['spam', 'harassment', 'sexual', 'violence', 'copyright', 'other']);
+
+// Resolve every open report for a target in one go — used by dismiss,
+// takedown, and both hard-delete paths (else reports would orphan forever
+// once their target is gone).
+function resolveReportsFor(targetType, targetId, status, byUserId) {
+  db.prepare(`UPDATE reports SET status = ?, resolved_by = ?, resolved_at = unixepoch()
+    WHERE target_type = ? AND target_id = ? AND status = 'open'`)
+    .run(status, byUserId, targetType, String(targetId));
+}
+
+app.post('/api/report', reportLimiter, requireAuth, (req, res) => {
+  const targetType = String(req.body.target_type || '');
+  const targetId = String(req.body.target_id || '');
+  const reason = String(req.body.reason || '');
+  const details = String(req.body.details || '').trim().slice(0, 500);
+  if (!REPORT_REASONS.has(reason)) return res.status(400).json({ error: 'Pick a reason for the report.' });
+  const exists = targetType === 'video'
+    ? db.prepare('SELECT 1 FROM videos WHERE id = ?').get(targetId)
+    : targetType === 'comment'
+      ? db.prepare('SELECT 1 FROM comments WHERE id = ?').get(parseInt(targetId, 10))
+      : null;
+  if (!exists) return res.status(404).json({ error: 'That content no longer exists.' });
+  try {
+    db.prepare(`INSERT INTO reports (reporter_id, target_type, target_id, reason, details)
+      VALUES (?, ?, ?, ?, ?)`).run(req.user.id, targetType, targetId, reason, details);
+    res.json({ ok: true });
+  } catch (e) {
+    // Partial unique index: one open report per user per target.
+    res.status(409).json({ error: 'You have already reported this.' });
+  }
+});
+
+// The moderation queue: open reports with enough target context to act on.
+// LEFT JOINs because targets may have been deleted since the report was
+// filed (those render as "content no longer exists" but stay dismissible).
+app.get('/api/admin/reports', requireAdmin, (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.id, r.target_type, r.target_id, r.reason, r.details, r.created_at,
+           ru.username AS reporter_name,
+           v.title AS video_title, v.thumbnail AS video_thumbnail, v.hidden AS video_hidden,
+           vu.id AS video_owner_id, vu.username AS video_owner_name, vu.suspended AS video_owner_suspended,
+           c.text AS comment_text, c.video_id AS comment_video_id,
+           cu.id AS comment_author_id, cu.username AS comment_author_name, cu.suspended AS comment_author_suspended
+    FROM reports r
+    JOIN users ru ON ru.id = r.reporter_id
+    LEFT JOIN videos v ON r.target_type = 'video' AND v.id = r.target_id
+    LEFT JOIN users vu ON vu.id = v.user_id
+    LEFT JOIN comments c ON r.target_type = 'comment' AND c.id = CAST(r.target_id AS INTEGER)
+    LEFT JOIN users cu ON cu.id = c.user_id
+    WHERE r.status = 'open'
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT 200
+  `).all();
+  res.json({ reports: rows });
+});
+
+app.post('/api/admin/reports/:id/dismiss', requireAdmin, (req, res) => {
+  const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(req.params.id);
+  if (!report) return res.status(404).json({ error: 'Report not found.' });
+  resolveReportsFor(report.target_type, report.target_id, 'dismissed', req.user.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/videos/:id/hide', requireAdmin, (req, res) => {
+  const info = db.prepare('UPDATE videos SET hidden = 1 WHERE id = ?').run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'Video not found.' });
+  reindexVideo(req.params.id); // deindexes from search (reindexStmt skips hidden rows)
+  resolveReportsFor('video', req.params.id, 'actioned', req.user.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/videos/:id/restore', requireAdmin, (req, res) => {
+  const info = db.prepare('UPDATE videos SET hidden = 0 WHERE id = ?').run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'Video not found.' });
+  reindexVideo(req.params.id); // rebuilds the FTS row
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/suspend', requireAdmin, (req, res) => {
+  const target = db.prepare('SELECT id, role FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (target.id === req.user.id) return res.status(400).json({ error: "You can't suspend yourself." });
+  if (target.role === 'admin') return res.status(400).json({ error: "Admins can't be suspended." });
+  db.prepare('UPDATE users SET suspended = 1 WHERE id = ?').run(target.id);
+  // Sessions die via the suspended filter in getUser; nothing else to revoke.
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/unsuspend', requireAdmin, (req, res) => {
+  const info = db.prepare('UPDATE users SET suspended = 0 WHERE id = ?').run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'User not found.' });
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const rows = db.prepare(`
+    SELECT u.id, u.username, u.role, u.suspended, u.created_at,
+           (SELECT COUNT(*) FROM videos v WHERE v.user_id = u.id) AS video_count
+    FROM users u ${q ? 'WHERE u.username LIKE ?' : ''}
+    ORDER BY u.created_at DESC LIMIT 100
+  `).all(...(q ? [`%${q}%`] : []));
+  res.json({ users: rows });
 });
 
 // ---------- pretty page routes ----------
@@ -1006,6 +1156,10 @@ app.post('/api/videos/:id/view', requireAuth, (req, res) => {
 app.get('/', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', req.user ? 'index.html' : 'splash.html')));
 app.get('/reset', (req, res) => res.sendFile(path.join(__dirname, 'public', 'reset.html')));
+app.get('/guidelines', (req, res) => res.sendFile(path.join(__dirname, 'public', 'guidelines.html')));
+app.get('/admin', pageAuth, (req, res) => (req.user.role === 'admin'
+  ? res.sendFile(path.join(__dirname, 'public', 'admin.html'))
+  : res.redirect('/')));
 
 app.get('/watch/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'watch.html')));
 app.get('/shorts', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));

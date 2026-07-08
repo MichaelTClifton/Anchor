@@ -42,6 +42,11 @@ comments — all backed by a single Node.js server and a SQLite database.
   security headers + a CSP (helmet), gzip compression, reverse-proxy-aware
   cookies/WebAuthn (`trust proxy`), and video owners can remove comments on
   their own videos
+- **Trust & safety** — report buttons on every video (watch page + Shorts) and
+  comment; an admin moderation queue at `/admin` (dismiss, remove content,
+  suspend accounts); reversible video takedowns that vanish from all feeds and
+  search; account suspension that kills sessions instantly; and public
+  [Community Guidelines](/guidelines) that new accounts must accept
 
 ## Getting started
 
@@ -65,6 +70,14 @@ and restart the server — it detects ffmpeg at startup and logs whether
 transcoding is active. Videos interrupted mid-transcode are picked up again on
 the next start, and the original upload is always playable while (and even if)
 transcoding runs.
+
+### Moderation
+
+Promote an account to admin with `npm run make-admin -- <username>`. Admins
+get a shield icon in the header with an open-report count, linking to the
+review queue at `/admin`. Takedowns are reversible (hidden videos stay
+visible to their owner, flagged with a removal notice); suspensions block
+sign-in and kill existing sessions immediately.
 
 ### Backups
 

@@ -18,6 +18,10 @@ comments — all backed by a single Node.js server and a SQLite database.
 - **Transcoding** — when ffmpeg is installed, uploads are encoded in the background
   into 1080p/720p/480p/360p H.264 renditions (never upscaled), with a quality
   selector on the watch page; without ffmpeg, videos simply play in their original format
+- **Live streaming** — broadcast from OBS with a per-user stream key (`/studio`),
+  watch in the browser over HLS with real-time chat and viewer counts, and every
+  broadcast is automatically archived as a rewatchable, searchable VOD on the
+  streamer's channel — even if the server crashes mid-stream
 - **Shorts** — vertical clips under a minute are auto-detected at upload and get
   their own swipeable full-screen feed (`/shorts`) with snap scrolling,
   autoplay-in-view, looping, like/share actions, and keyboard navigation, plus
@@ -70,6 +74,22 @@ and restart the server — it detects ffmpeg at startup and logs whether
 transcoding is active. Videos interrupted mid-transcode are picked up again on
 the next start, and the original upload is always playable while (and even if)
 transcoding runs.
+
+### Live streaming
+
+Requires ffmpeg (same detection as transcoding). Get your stream key at
+`/studio`, then in OBS: Settings → Stream → Service "Custom", Server
+`rtmp://<your-host>:1935/live`, and your key. Use the x264 encoder with AAC
+audio and set **Keyframe Interval: 2s** (Settings → Output) so viewers join
+quickly. Viewers watch at `/live` (plain HLS, ~10-20s latency) with live chat;
+when you stop streaming the broadcast is saved to your channel as a normal
+video and transcodes in the background. Streams shorter than ~5 seconds are
+discarded. Long streams grow the recording ~1-2 GB/hour until they end.
+
+RTMP is raw TCP on port 1935 (`RTMP_PORT` to change): it must be
+port-forwarded directly alongside 80/443 — it cannot ride the HTTP reverse
+proxy. Admins can stop any live stream from its watch page; suspending a user
+also cuts their broadcast.
 
 ### Moderation
 

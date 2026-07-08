@@ -6,8 +6,9 @@ const fs = require('fs');
 const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const { db, UPLOADS_DIR, THUMBS_DIR, reindexVideo } = require('./db');
+const { db, UPLOADS_DIR, THUMBS_DIR, LIVE_DIR, reindexVideo } = require('./db');
 const transcode = require('./transcode');
+const live = require('./live');
 const authlib = require('./auth');
 
 const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
@@ -45,7 +46,8 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       styleSrcAttr: ["'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
-      mediaSrc: ["'self'"],
+      mediaSrc: ["'self'", 'blob:'],   // hls.js attaches MediaSource via a blob: URL
+      workerSrc: ["'self'", 'blob:'],  // hls.js demuxes in a blob worker
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
@@ -85,6 +87,10 @@ const reportLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, limit: 20,
   standardHeaders: true, legacyHeaders: false, message: slowDown,
 });
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000, limit: 20,
+  standardHeaders: true, legacyHeaders: false, message: slowDown,
+});
 
 // Resolve the viewer once per request. Signed-out visitors only ever reach
 // the splash and reset pages; every content page, API and media file needs a
@@ -104,6 +110,12 @@ app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 // express.static handles HTTP Range requests, so seeking in the player works.
 app.use('/media', staticAuth, express.static(UPLOADS_DIR));
 app.use('/thumbs', staticAuth, express.static(THUMBS_DIR));
+// Rolling HLS output for live streams. The playlist must never be cached
+// (it changes every couple of seconds); segments are immutable but shortlived.
+app.use('/live-hls', staticAuth, express.static(LIVE_DIR, {
+  setHeaders: (res, p) => res.setHeader('Cache-Control',
+    p.endsWith('.m3u8') ? 'no-store' : 'private, max-age=60'),
+}));
 
 // ---------- auth helpers ----------
 
@@ -1128,7 +1140,9 @@ app.post('/api/admin/users/:id/suspend', requireAdmin, (req, res) => {
   if (target.id === req.user.id) return res.status(400).json({ error: "You can't suspend yourself." });
   if (target.role === 'admin') return res.status(400).json({ error: "Admins can't be suspended." });
   db.prepare('UPDATE users SET suspended = 1 WHERE id = ?').run(target.id);
-  // Sessions die via the suspended filter in getUser; nothing else to revoke.
+  // Sessions die via the suspended filter in getUser; an in-flight broadcast
+  // is cut off here (its VOD still archives via the normal teardown).
+  live.stopStreamsForUser(target.id);
   res.json({ ok: true });
 });
 
@@ -1149,6 +1163,93 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
   res.json({ users: rows });
 });
 
+// ---------- live streaming ----------
+
+const STREAM_COLS = `s.id, s.title, s.live, s.started_at, s.ended_at, s.vod_video_id,
+         u.id AS channel_id, u.username AS channel_name`;
+
+app.get('/api/live', requireAuth, (req, res) => {
+  const rows = db.prepare(`SELECT ${STREAM_COLS} FROM streams s JOIN users u ON u.id = s.user_id
+    WHERE s.live = 1 ORDER BY s.started_at DESC LIMIT 50`).all();
+  for (const r of rows) r.viewers = live.viewerCount(r.id);
+  res.json({ streams: rows });
+});
+
+app.get('/api/live/:id', requireAuth, (req, res) => {
+  const stream = db.prepare(`SELECT ${STREAM_COLS} FROM streams s JOIN users u ON u.id = s.user_id
+    WHERE s.id = ?`).get(req.params.id);
+  if (!stream) return res.status(404).json({ error: 'Stream not found.' });
+  stream.viewers = live.viewerCount(stream.id);
+  stream.subscribers = db.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE channel_id = ?')
+    .get(stream.channel_id).n;
+  stream.subscribed = !!db.prepare('SELECT 1 FROM subscriptions WHERE subscriber_id = ? AND channel_id = ?')
+    .get(req.user.id, stream.channel_id);
+  stream.is_owner = req.user.id === stream.channel_id;
+  res.json(stream);
+});
+
+app.get('/api/live/:id/chat/events', requireAuth, (req, res) => {
+  const stream = db.prepare('SELECT id, live FROM streams WHERE id = ?').get(req.params.id);
+  if (!stream || !stream.live) return res.status(404).json({ error: 'Stream is not live.' });
+  live.chatSubscribe(stream.id, req, res);
+});
+
+app.post('/api/live/:id/chat', chatLimiter, requireAuth, (req, res) => {
+  const stream = db.prepare('SELECT id, live FROM streams WHERE id = ?').get(req.params.id);
+  if (!stream || !stream.live) return res.status(404).json({ error: 'Stream is not live.' });
+  const text = String(req.body.text || '').trim().slice(0, 300);
+  if (!text) return res.status(400).json({ error: 'Say something first.' });
+  live.chatSend(stream.id, req.user, text);
+  res.json({ ok: true });
+});
+
+// ---------- streamer studio ----------
+
+function myLiveStream(userId) {
+  return db.prepare('SELECT id FROM streams WHERE user_id = ? AND live = 1 ORDER BY started_at DESC')
+    .get(userId) || null;
+}
+
+app.get('/api/studio', requireAuth, (req, res) => {
+  let user = db.prepare('SELECT stream_key, stream_title FROM users WHERE id = ?').get(req.user.id);
+  if (!user.stream_key) {
+    // Lazily mint the key on first visit to the studio.
+    const key = crypto.randomBytes(12).toString('hex');
+    db.prepare('UPDATE users SET stream_key = ? WHERE id = ?').run(key, req.user.id);
+    user = { ...user, stream_key: key };
+  }
+  const current = myLiveStream(req.user.id);
+  res.json({
+    enabled: live.enabled,
+    stream_key: user.stream_key,
+    rtmp_url: `rtmp://${req.hostname}:${live.RTMP_PORT}/live`,
+    stream_title: user.stream_title,
+    live: current ? { id: current.id, viewers: live.viewerCount(current.id) } : null,
+  });
+});
+
+app.post('/api/studio/key', requireAuth, (req, res) => {
+  // Regenerating usually means "my key leaked" — cut any active broadcast.
+  const current = myLiveStream(req.user.id);
+  if (current) live.stopStream(current.id);
+  const key = crypto.randomBytes(12).toString('hex');
+  db.prepare('UPDATE users SET stream_key = ? WHERE id = ?').run(key, req.user.id);
+  res.json({ stream_key: key });
+});
+
+app.post('/api/studio/title', requireAuth, (req, res) => {
+  const title = String(req.body.title || '').trim().slice(0, 120);
+  db.prepare('UPDATE users SET stream_title = ? WHERE id = ?').run(title, req.user.id);
+  const current = myLiveStream(req.user.id);
+  if (current) db.prepare('UPDATE streams SET title = ? WHERE id = ?').run(title, current.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/streams/:id/stop', requireAdmin, (req, res) => {
+  if (!live.stopStream(req.params.id)) return res.status(404).json({ error: 'Stream is not live.' });
+  res.json({ ok: true });
+});
+
 // ---------- pretty page routes ----------
 
 // Signed-out visitors land on the splash page; the reset page is the only
@@ -1166,6 +1267,9 @@ app.get('/shorts', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'pu
 app.get('/shorts/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'shorts.html')));
 app.get('/channel/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'channel.html')));
 app.get('/upload', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'upload.html')));
+app.get('/live', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'live.html')));
+app.get('/live/:id', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'livewatch.html')));
+app.get('/studio', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'studio.html')));
 app.get('/browse', pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'browse.html')));
 for (const page of ['trending', 'history', 'liked', 'later', 'subscriptions', 'settings']) {
   app.get('/' + page, pageAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', `${page}.html`)));
@@ -1179,9 +1283,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong.' });
 });
 
+live.init();
+
 app.listen(PORT, () => {
   console.log(`⚓ Anchor is running at http://localhost:${PORT}`);
   console.log(transcode.available
     ? 'Transcoding: ffmpeg found — uploads will get multi-quality renditions.'
     : 'Transcoding: ffmpeg not found — videos will play in their original format only.');
+  console.log(live.enabled
+    ? `Live streaming: RTMP ingest on port ${live.RTMP_PORT} (rtmp://<host>:${live.RTMP_PORT}/live).`
+    : 'Live streaming: disabled (requires ffmpeg).');
 });

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div class="watch-layout">
+      <div id="primary"><div class="empty">Loading&hellip;</div></div>
+      <div class="chat-panel" id="chat-panel" hidden>
+        <div class="chat-head">Live chat <span id="chat-viewers" class="modal-note"></span></div>
+        <div class="chat-msgs" id="chat-msgs"></div>
+        <form class="chat-input" id="chat-form">
+          <input id="chat-text" maxlength="300" placeholder="Say something" autocomplete="off">
+          <button class="primary" aria-label="Send">&gt;</button>
+        </form>
+      </div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script src="/vendor/hls.light.min.js"></script>
+  <script>
+    const streamId = location.pathname.split('/').pop();
+    let stream = null;
+    let hls = null;
+    let es = null;
+
+    onAuthReady(load);
+
+    async function load() {
+      try {
+        stream = await api(`/api/live/${encodeURIComponent(streamId)}`);
+      } catch (e) {
+        document.getElementById('primary').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+        return;
+      }
+      if (!stream.live) return streamOver();
+      document.title = `${stream.title || stream.channel_name + ' live'} - Anchor`;
+      render();
+      startPlayer();
+      startChat();
+    }
+
+    // Once the broadcast ends, hand viewers to the VOD when it exists.
+    function streamOver() {
+      if (es) { es.close(); es = null; }
+      if (stream && stream.vod_video_id) {
+        location.href = `/watch/${stream.vod_video_id}`;
+        return;
+      }
+      document.getElementById('primary').innerHTML = `<div class="empty">This stream has ended.
+        <br><br>If a replay was saved it will appear on the channel shortly.
+        <br><br><button class="primary" onclick="location.href='/live'">Browse live channels</button></div>`;
+      document.getElementById('chat-panel').hidden = true;
+    }
+
+    function render() {
+      const s = stream;
+      document.getElementById('primary').innerHTML = `
+        <video class="player" id="player" controls autoplay playsinline muted></video>
+        <div class="watch-title"><span class="duration live-badge">LIVE</span> ${esc(s.title || s.channel_name + ' is live')}</div>
+        <div class="watch-bar">
+          <div class="channel-row">
+            <a class="avatar" href="/channel/${s.channel_id}">${esc(s.channel_name[0].toUpperCase())}</a>
+            <div>
+              <a href="/channel/${s.channel_id}"><b>${esc(s.channel_name)}</b></a>
+              <div class="sub-count" id="sub-count">${subscriberLabel(s.subscribers)}</div>
+            </div>
+            ${s.is_owner ? '' : `<button id="sub-btn" class="${s.subscribed ? 'subscribed' : 'primary'}">
+              ${s.subscribed ? 'Subscribed' : 'Subscribe'}</button>`}
+          </div>
+          <div class="actions">
+            <span class="modal-note" id="viewer-line">${formatViews(s.viewers)} watching &middot; started ${timeAgo(s.started_at)}</span>
+            ${ME && ME.role === 'admin' ? '<button class="danger" id="stop-btn">Stop stream</button>' : ''}
+          </div>
+        </div>`;
+
+      const subBtn = document.getElementById('sub-btn');
+      if (subBtn) subBtn.onclick = async () => {
+        const r = await api(`/api/channels/${s.channel_id}/subscribe`, { method: 'POST' });
+        subBtn.textContent = r.subscribed ? 'Subscribed' : 'Subscribe';
+        subBtn.className = r.subscribed ? 'subscribed' : 'primary';
+        document.getElementById('sub-count').textContent = subscriberLabel(r.subscribers);
+      };
+      const stopBtn = document.getElementById('stop-btn');
+      if (stopBtn) stopBtn.onclick = async () => {
+        if (!confirm('Stop this live stream?')) return;
+        try {
+          await api(`/api/admin/streams/${encodeURIComponent(streamId)}/stop`, { method: 'POST' });
+          toast('Stream stopped');
+        } catch (e) { toast(e.message, 'error'); }
+      };
+    }
+
+    function startPlayer() {
+      const video = document.getElementById('player');
+      const src = `/live-hls/${encodeURIComponent(streamId)}/index.m3u8`;
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src; // Safari plays HLS natively
+      } else if (window.Hls && Hls.isSupported()) {
+        hls = new Hls({ liveDurationInfinity: true });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.ERROR, (ev, data) => {
+          if (!data.fatal) return;
+          // The playlist vanishing usually means the stream just ended —
+          // confirm with the API before showing an error.
+          hls.destroy();
+          hls = null;
+          setTimeout(recheck, 1500);
+        });
+      } else {
+        document.getElementById('primary').insertAdjacentHTML('afterbegin',
+          '<div class="empty">This browser cannot play live streams.</div>');
+      }
+    }
+
+    async function recheck() {
+      try { stream = await api(`/api/live/${encodeURIComponent(streamId)}`); }
+      catch (e) { return streamOver(); }
+      if (!stream.live) return streamOver();
+      startPlayer(); // transient hiccup — reattach
+    }
+
+    // ---------- chat ----------
+
+    function appendMsg(html) {
+      const box = document.getElementById('chat-msgs');
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+      box.insertAdjacentHTML('beforeend', html);
+      while (box.children.length > 200) box.firstElementChild.remove();
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+
+    function startChat() {
+      document.getElementById('chat-panel').hidden = false;
+      es = new EventSource(`/api/live/${encodeURIComponent(streamId)}/chat/events`);
+      es.onmessage = e => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'chat') {
+          appendMsg(`<div class="chat-msg"><a href="/channel/${msg.user_id}"><b>${esc(msg.username)}</b></a> ${esc(msg.text)}</div>`);
+        } else if (msg.type === 'viewers') {
+          document.getElementById('chat-viewers').textContent = `${formatViews(msg.n)} watching`;
+          const line = document.getElementById('viewer-line');
+          if (line && stream) line.textContent =
+            `${formatViews(msg.n)} watching · started ${timeAgo(stream.started_at)}`;
+        } else if (msg.type === 'ended') {
+          stream.live = 0;
+          stream.vod_video_id = msg.vod_id;
+          appendMsg('<div class="chat-msg modal-note">Stream ended.</div>');
+          setTimeout(streamOver, 2500);
+        }
+      };
+      document.getElementById('chat-form').onsubmit = async e => {
+        e.preventDefault();
+        const input = document.getElementById('chat-text');
+        const text = input.value.trim();
+        if (!text) return;
+        try {
+          await api(`/api/live/${encodeURIComponent(streamId)}/chat`, { method: 'POST', json: { text } });
+          input.value = '';
+        } catch (err) { toast(err.message, 'error'); }
+      };
+    }
+  </script>
+</body>
+</html>

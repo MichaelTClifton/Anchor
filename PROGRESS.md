@@ -64,6 +64,17 @@ incrementally to `claude/video-hosting-site-32royz`.
   `npm run make-admin -- <user>`; limiter tuning (skipSuccessfulRequests on
   auth, split comment/upload/report limiters).
 
+- [x] **Phase 10 — Live streaming + VOD + chat.** node-media-server@2.7.4
+  (exact pin; process-global handler strip after run()); per-user stream keys
+  (/studio: mask/copy/regenerate/title); relay ffmpeg `-c copy` → rolling HLS
+  (session-gated /live-hls) + MPEG-TS recording (crash-tolerant); finalize →
+  remux → videos row → reindexVideo + transcode.enqueue → normal VOD; boot
+  salvage of interrupted streams (verified via SIGKILL); SSE chat with ring
+  buffer + presence counts (no-transform bypasses gzip); /live grid +
+  /live/:id (vendored hls.light.min.js, CSP mediaSrc/workerSrc blob:) +
+  home shelf + sidebar; prePlay loopback guard; admin stop-stream; suspend
+  cuts broadcasts; chatLimiter 20/min.
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

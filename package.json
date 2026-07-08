@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "backup": "node scripts/backup.js",
-    "make-admin": "node scripts/make-admin.js"
+    "make-admin": "node scripts/make-admin.js",
+    "vendor": "node -e \"require('fs').copyFileSync('node_modules/hls.js/dist/hls.light.min.js','public/vendor/hls.light.min.js')\""
   },
   "license": "MIT",
   "dependencies": {
@@ -15,6 +16,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
-    "multer": "^2.2.0"
+    "hls.js": "^1.6.16",
+    "multer": "^2.2.0",
+    "node-media-server": "2.7.4"
   }
 }

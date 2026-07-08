@@ -9,6 +9,7 @@
 </head>
 <body>
   <main>
+    <div id="live-row"></div>
     <div id="continue-row"></div>
     <div id="shorts-row"></div>
     <div id="results-heading"></div>
@@ -22,6 +23,18 @@
         `<h2>Results for &ldquo;${esc(q)}&rdquo;</h2>`;
       document.title = `${q} - Anchor`;
     } else {
+      // Live-now shelf.
+      document.addEventListener('auth-ready', async () => {
+        if (!ME) return;
+        try {
+          const { streams } = await api('/api/live');
+          if (streams.length) {
+            document.getElementById('live-row').innerHTML =
+              `<h2><a href="/live">${icon('live')} Live now</a></h2>
+               <div class="row">${streams.map(liveCard).join('')}</div>`;
+          }
+        } catch (e) { /* shelf is optional */ }
+      }, { once: true });
       // Shorts shelf (shorts are excluded from the main grid).
       (async () => {
         try {

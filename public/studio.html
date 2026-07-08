@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Studio - Anchor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300e5ff' stroke-width='2' stroke-linecap='square'><circle cx='12' cy='5' r='2.5'/><path d='M12 7.5V21M4 13c0 5 3.6 8 8 8s8-3 8-8M8 11h8'/></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>Streaming studio</h1>
+    <div id="studio-body">
+      <div class="panel settings-panel">
+        <h2>Status</h2>
+        <p id="status-line" class="modal-note">Checking&hellip;</p>
+      </div>
+
+      <div class="panel settings-panel">
+        <h2>Stream setup</h2>
+        <p class="modal-note">In OBS: Settings &rarr; Stream &rarr; Service &ldquo;Custom&rdquo;,
+          paste the server and key below, then Start Streaming. Use the x264 encoder with AAC
+          audio, and set <b>Keyframe Interval to 2s</b> (Settings &rarr; Output) so playback
+          starts quickly.</p>
+        <div class="field"><label>Server</label>
+          <div class="key-row"><code id="rtmp-url"></code>
+            <button id="copy-url">Copy</button></div></div>
+        <div class="field"><label>Stream key (keep this secret)</label>
+          <div class="key-row"><code id="stream-key" class="masked"></code>
+            <button id="reveal-key">Show</button>
+            <button id="copy-key">Copy</button>
+            <button class="danger" id="regen-key">Regenerate</button></div></div>
+        <p class="modal-note">Anyone with your key can broadcast as you. Regenerating
+          invalidates the old key immediately (and ends a live broadcast, if any).</p>
+      </div>
+
+      <div class="panel settings-panel">
+        <h2>Stream info</h2>
+        <form id="title-form">
+          <div class="field"><label>Stream title (applies to your next/current broadcast and its saved replay)</label>
+            <input id="stream-title" maxlength="120" placeholder="e.g. Friday night build stream"></div>
+          <button class="primary">Save title</button>
+        </form>
+      </div>
+
+      <div class="panel settings-panel">
+        <h2>Replays</h2>
+        <p class="modal-note">When you stop streaming, the broadcast is automatically saved
+          as a video on your channel (streams shorter than a few seconds are discarded).
+          It transcodes in the background like any upload.</p>
+      </div>
+    </div>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    let studio = null;
+
+    async function refresh() {
+      studio = await api('/api/studio');
+      if (!studio.enabled) {
+        document.getElementById('studio-body').innerHTML =
+          '<div class="empty">Live streaming is disabled on this server (ffmpeg is required).</div>';
+        return;
+      }
+      document.getElementById('rtmp-url').textContent = studio.rtmp_url;
+      document.getElementById('stream-key').textContent = studio.stream_key;
+      if (!document.getElementById('stream-title').value) {
+        document.getElementById('stream-title').value = studio.stream_title || '';
+      }
+      const status = document.getElementById('status-line');
+      if (studio.live) {
+        status.innerHTML = `<span class="duration live-badge">LIVE</span>
+          ${formatViews(studio.live.viewers)} watching &middot;
+          <a class="linkish" href="/live/${esc(studio.live.id)}">open your stream</a>`;
+      } else {
+        status.textContent = 'Offline. Start streaming from OBS and your channel goes live within a few seconds.';
+      }
+    }
+
+    document.getElementById('reveal-key').onclick = e => {
+      const el = document.getElementById('stream-key');
+      el.classList.toggle('masked');
+      e.target.textContent = el.classList.contains('masked') ? 'Show' : 'Hide';
+    };
+    document.getElementById('copy-url').onclick = async () => {
+      await navigator.clipboard.writeText(studio.rtmp_url);
+      toast('Server URL copied');
+    };
+    document.getElementById('copy-key').onclick = async () => {
+      await navigator.clipboard.writeText(studio.stream_key);
+      toast('Stream key copied');
+    };
+    document.getElementById('regen-key').onclick = async () => {
+      if (!confirm('Regenerate your stream key? The old key stops working immediately.')) return;
+      const r = await api('/api/studio/key', { method: 'POST' });
+      studio.stream_key = r.stream_key;
+      document.getElementById('stream-key').textContent = r.stream_key;
+      toast('New stream key generated');
+    };
+    document.getElementById('title-form').onsubmit = async e => {
+      e.preventDefault();
+      await api('/api/studio/title', {
+        method: 'POST', json: { title: document.getElementById('stream-title').value },
+      });
+      toast('Stream title saved');
+    };
+
+    document.addEventListener('auth-ready', () => {
+      if (!ME) { location.href = '/'; return; }
+      refresh().catch(e => toast(e.message, 'error'));
+      setInterval(() => refresh().catch(() => {}), 10000);
+    }, { once: true });
+  </script>
+</body>
+</html>

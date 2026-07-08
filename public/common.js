@@ -42,6 +42,7 @@ const ICONS = {
   check: '<path d="M4 12.5L10 18 20 6"/>',
   upload: '<path d="M12 16V3M7 8l5-5 5 5M4 14v7h16v-7"/>',
   flag: '<path d="M5 21V3h14l-3 5 3 5H5"/>',
+  live: '<circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><path d="M7.5 16.5a6.5 6.5 0 010-9M16.5 7.5a6.5 6.5 0 010 9M4.5 19.5a10.5 10.5 0 010-15M19.5 4.5a10.5 10.5 0 010 15"/>',
 };
 
 function icon(name, cls = '') {
@@ -227,6 +228,18 @@ function shortCard(v) {
   </a>`;
 }
 
+// Card for a live stream (live grid + home shelf).
+function liveCard(s) {
+  return `<a class="card live-card" href="/live/${esc(s.id)}">
+    <div class="thumb"><span class="ph-initial">${esc(s.channel_name[0].toUpperCase())}</span>
+      <span class="duration live-badge">LIVE</span></div>
+    <div class="info">
+      <div class="title">${esc(s.title || s.channel_name + ' is live')}</div>
+      <div class="meta">${esc(s.channel_name)} &middot; ${formatViews(s.viewers)} watching</div>
+    </div>
+  </a>`;
+}
+
 // Toggle Watch Later from a card overlay button.
 async function toggleWatchLater(e, id) {
   e.preventDefault(); e.stopPropagation();
@@ -308,7 +321,7 @@ function renderHeader() {
 // ---------- sidebar ----------
 
 const SIDEBAR_SECTIONS = [
-  [['/', 'home', 'Home'], ['/shorts', 'bolt', 'Shorts'],
+  [['/', 'home', 'Home'], ['/live', 'live', 'Live'], ['/shorts', 'bolt', 'Shorts'],
    ['/trending', 'flame', 'Trending'], ['/browse', 'grid', 'Browse']],
   [['/subscriptions', 'tv', 'Subscriptions'], ['/history', 'clock', 'History'],
    ['/liked', 'thumb', 'Liked'], ['/later', 'bookmark', 'Watch Later']],
@@ -419,6 +432,7 @@ async function refreshHeaderActions() {
   const el = document.getElementById('header-actions');
   if (ME) {
     el.innerHTML = `
+      <a class="icon-btn" href="/studio" title="Go live" aria-label="Go live">${icon('live')}</a>
       <button class="primary" onclick="location.href='/upload'">${icon('upload')} Upload</button>
       <a class="me" href="/channel/${ME.id}">${icon('user')} <b>${esc(ME.username)}</b></a>
       ${ME.role === 'admin' ? `<a class="icon-btn admin-link" href="/admin" title="Moderation queue"
@@ -435,7 +449,17 @@ async function refreshHeaderActions() {
     el.innerHTML = `<button class="primary" id="signin-btn">Sign in</button>`;
     el.querySelector('#signin-btn').onclick = () => openAuthModal('login');
   }
+  window.AUTH_DONE = true;
   document.dispatchEvent(new CustomEvent('auth-ready'));
+}
+
+// Race-proof 'auth-ready': large blocking scripts (e.g. the vendored hls.js)
+// between common.js and a page's inline script can delay listener
+// registration past the event dispatch. Pages should use this instead of
+// addEventListener directly.
+function onAuthReady(fn) {
+  if (window.AUTH_DONE) fn();
+  else document.addEventListener('auth-ready', fn, { once: true });
 }
 
 // ---------- report modal ----------

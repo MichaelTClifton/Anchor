@@ -38,6 +38,10 @@ comments — all backed by a single Node.js server and a SQLite database.
   responsive layout, mobile drawer, persisted light/dark theme toggle, loading
   skeletons, toast notifications, and keyboard/focus accessibility
 - **Channels** — per-user channel pages with stats, plus subscribe/unsubscribe
+- **Hardening** — rate limiting on login/register/recovery/2FA/comments/uploads,
+  security headers + a CSP (helmet), gzip compression, reverse-proxy-aware
+  cookies/WebAuthn (`trust proxy`), and video owners can remove comments on
+  their own videos
 
 ## Getting started
 
@@ -62,8 +66,36 @@ transcoding is active. Videos interrupted mid-transcode are picked up again on
 the next start, and the original upload is always playable while (and even if)
 transcoding runs.
 
+### Backups
+
+`npm run backup` writes a hot, consistent snapshot of the database and all
+uploaded media to `backups/<timestamp>/` (also gitignored). Safe to run while
+the server is live. Wire it into cron for unattended backups, e.g. daily at
+3am while keeping the last 14:
+
+```
+0 3 * * * cd /path/to/Anchor && npm run backup && \
+  ls -1dt backups/*/ | tail -n +15 | xargs -r rm -rf
+```
+
+### Deploying behind a reverse proxy
+
+The app trusts the first proxy hop (`trust proxy`), so put it behind nginx,
+Caddy, or Cloudflare for TLS termination — this is what makes the session
+cookie's `Secure` flag and WebAuthn's origin detection work correctly over
+real HTTPS. Caddy is the simplest option since it provisions Let's Encrypt
+certificates automatically; a minimal `Caddyfile` is just:
+
+```
+your.domain.example {
+  reverse_proxy localhost:3000
+}
+```
+
 ## Stack
 
 - [Express 5](https://expressjs.com/) HTTP server, plain HTML/CSS/JS frontend (no build step)
 - [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) for storage
 - [multer](https://github.com/expressjs/multer) for multipart uploads
+- [helmet](https://github.com/helmetjs/helmet), [compression](https://github.com/expressjs/compression),
+  and [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) for hardening

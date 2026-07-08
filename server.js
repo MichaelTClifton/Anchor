@@ -3,6 +3,9 @@ const multer = require('multer');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const { db, UPLOADS_DIR, THUMBS_DIR, reindexVideo } = require('./db');
 const transcode = require('./transcode');
 const authlib = require('./auth');
@@ -14,7 +17,63 @@ const MAX_VIDEO_BYTES = 1024 * 1024 * 1024; // 1 GB
 const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime']);
 
 const app = express();
+// A reverse proxy (nginx/Caddy/Cloudflare) is expected in front in
+// production; trusting the first hop makes req.ip/req.protocol/req.secure
+// reflect the real client and scheme from X-Forwarded-For/-Proto instead of
+// the proxy's own loopback connection. This also fixes WebAuthn's rpInfo()
+// below, which derives rpId/origin from req.hostname/req.protocol. Harmless
+// with no proxy present — it just falls back to the direct socket.
+app.set('trust proxy', 1);
+
+app.use(helmet({
+  // This app has no build step: every page has inline <script> blocks and
+  // onclick="" attribute handlers (e.g. public/splash.html, common.js's
+  // generated buttons), and some inline style="" attributes. CSP treats
+  // <script> tags (script-src), inline event-handler attributes
+  // (script-src-attr) and style attributes (style-src-attr) as separate
+  // directives that do NOT fall back to script-src/style-src once any
+  // directive is set — helmet's own default is script-src-attr 'none',
+  // which would silently no-op every onclick="" in the app. All three need
+  // 'unsafe-inline' here. This still blocks the more common injection
+  // vector — loading an externally hosted script/style/object — and
+  // framing/base-uri are locked down.
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrcAttr: ["'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      mediaSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  },
+}));
+app.use(compression()); // no-ops on already-compressed types (video/mp4) automatically
 app.use(express.json());
+
+// ---------- rate limiting ----------
+// Keyed by client IP (trust proxy above makes that the real client, not the
+// reverse proxy, when one is present).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
+});
+const writeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Slow down — too many requests. Please try again shortly.' },
+});
 
 // Resolve the viewer once per request. Signed-out visitors only ever reach
 // the splash and reset pages; every content page, API and media file needs a
@@ -66,7 +125,7 @@ function requireAuth(req, res, next) {
 
 // ---------- auth routes ----------
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', authLimiter, (req, res) => {
   const username = String(req.body.username || '').trim();
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
@@ -86,7 +145,7 @@ app.post('/api/register', (req, res) => {
   try {
     const info = db.prepare('INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)')
       .run(username, hashPassword(password), email);
-    startSession(res, info.lastInsertRowid);
+    startSession(req, res, info.lastInsertRowid);
     res.json({ id: info.lastInsertRowid, username });
   } catch (e) {
     const dup = db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
@@ -94,7 +153,7 @@ app.post('/api/register', (req, res) => {
   }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', authLimiter, (req, res) => {
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
@@ -107,11 +166,11 @@ app.post('/api/login', (req, res) => {
     const ticket = authlib.putChallenge('totp-login', { userId: user.id, attempts: 0 });
     return res.json({ totp_required: true, ticket });
   }
-  startSession(res, user.id);
+  startSession(req, res, user.id);
   res.json({ id: user.id, username: user.username });
 });
 
-app.post('/api/login/totp', (req, res) => {
+app.post('/api/login/totp', authLimiter, (req, res) => {
   const ticket = req.body.ticket;
   const data = authlib.peekChallenge('totp-login', ticket);
   if (!data) return res.status(400).json({ error: 'Sign-in expired — start again.' });
@@ -124,15 +183,18 @@ app.post('/api/login/totp', (req, res) => {
     return res.status(401).json({ error: 'That code is not right. Try again.' });
   }
   authlib.dropChallenge(ticket);
-  startSession(res, user.id);
+  startSession(req, res, user.id);
   res.json({ id: user.id, username: user.username });
 });
 
-function startSession(res, userId) {
+function startSession(req, res, userId) {
   const token = crypto.randomBytes(24).toString('hex');
   db.prepare('INSERT INTO sessions (token, user_id) VALUES (?, ?)').run(token, userId);
+  // req.secure reflects the real scheme via trust proxy above, so this cookie
+  // is Secure once actually served over HTTPS (through a proxy or directly),
+  // and plain (working on http://localhost) in local development.
   res.setHeader('Set-Cookie',
-    `session=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax`);
+    `session=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${req.secure ? '; Secure' : ''}`);
 }
 
 app.post('/api/logout', (req, res) => {
@@ -207,7 +269,7 @@ app.post('/api/passkeys/login/options', (req, res) => {
   });
 });
 
-app.post('/api/passkeys/login/verify', (req, res) => {
+app.post('/api/passkeys/login/verify', authLimiter, (req, res) => {
   const data = authlib.takeChallenge('pk-login', req.body.ticket);
   if (!data) return res.status(400).json({ error: 'Sign-in expired — try again.' });
   const passkey = db.prepare('SELECT * FROM passkeys WHERE id = ?').get(String(req.body.id || ''));
@@ -220,7 +282,7 @@ app.post('/api/passkeys/login/verify', (req, res) => {
     });
     db.prepare('UPDATE passkeys SET counter = ? WHERE id = ?').run(counter, passkey.id);
     const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(passkey.user_id);
-    startSession(res, user.id);
+    startSession(req, res, user.id);
     res.json({ id: user.id, username: user.username });
   } catch (e) {
     res.status(401).json({ error: `Passkey sign-in failed: ${e.message}` });
@@ -262,7 +324,7 @@ app.post('/api/2fa/disable', requireAuth, (req, res) => {
 
 // ---------- password recovery ----------
 
-app.post('/api/recover', (req, res) => {
+app.post('/api/recover', authLimiter, (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const user = email
     ? db.prepare('SELECT id, username, email FROM users WHERE email = ?').get(email) : null;
@@ -281,7 +343,7 @@ app.post('/api/recover', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', authLimiter, (req, res) => {
   const row = db.prepare('SELECT * FROM password_resets WHERE token = ?').get(String(req.body.token || ''));
   if (!row || row.used || row.expires_at < Math.floor(Date.now() / 1000)) {
     return res.status(400).json({ error: 'That reset link is invalid or has expired.' });
@@ -364,7 +426,7 @@ const upload = multer({
   },
 });
 
-app.post('/api/videos', requireAuth,
+app.post('/api/videos', writeLimiter, requireAuth,
   upload.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]),
   (req, res) => {
     const videoFile = req.files && req.files.video && req.files.video[0];
@@ -707,7 +769,7 @@ app.get('/api/videos/:id/comments', requireAuth, (req, res) => {
   res.json({ comments: rows });
 });
 
-app.post('/api/videos/:id/comments', requireAuth, (req, res) => {
+app.post('/api/videos/:id/comments', writeLimiter, requireAuth, (req, res) => {
   const video = db.prepare('SELECT id FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found.' });
   const text = String(req.body.text || '').trim().slice(0, 2000);
@@ -722,9 +784,14 @@ app.post('/api/videos/:id/comments', requireAuth, (req, res) => {
 });
 
 app.delete('/api/comments/:id', requireAuth, (req, res) => {
-  const comment = db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.id);
+  const comment = db.prepare(`
+    SELECT c.*, v.user_id AS video_owner_id FROM comments c
+    JOIN videos v ON v.id = c.video_id WHERE c.id = ?
+  `).get(req.params.id);
   if (!comment) return res.status(404).json({ error: 'Comment not found.' });
-  if (comment.user_id !== req.user.id) return res.status(403).json({ error: 'You can only delete your own comments.' });
+  if (comment.user_id !== req.user.id && comment.video_owner_id !== req.user.id) {
+    return res.status(403).json({ error: 'You can only delete your own comments, or comments on your own videos.' });
+  }
   db.prepare('DELETE FROM comments WHERE id = ?').run(comment.id);
   res.json({ ok: true });
 });

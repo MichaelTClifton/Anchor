@@ -38,8 +38,20 @@ incrementally to `claude/video-hosting-site-32royz`.
 - [x] **Phase 7 — Neon restyle.** Flat SVG icon system (ICONS/icon()/data-icon
   in common.js) replacing every emoji; style.css rewritten as a hard-edged
   cyberpunk theme: Helvetica Neue, zero border-radius, uppercase display text,
-  cyan (#00e5ff) + magenta (#ff2975) neon glow, faint background grid, square
-  avatars, neon favicon; light theme kept with subtler ink-on-paper values.
+  cyan (#00e5ff) + magenta (#ff2975) neon glow, square avatars, neon favicon;
+  light theme kept with subtler ink-on-paper values.
+
+- [x] **Phase 8 — Tier 0 hardening** (see the CDN/roadmap plan for the full
+  reprioritized list; Tiers 1+ are future work). Rate limiting
+  (`express-rate-limit`) on login/register/recover/reset/2FA-login/passkey
+  login/comments/uploads; security headers + a CSP tuned for this app's
+  inline scripts/onclick handlers, plus gzip compression (`helmet`,
+  `compression`); `trust proxy` so the app is reverse-proxy-ready (fixes
+  WebAuthn's rpId/origin derivation and lets the session cookie set `Secure`
+  once actually served over HTTPS); video owners can now delete comments on
+  their own videos, not just their own comments; `npm run backup` (hot
+  `db.backup()` + media copy into `backups/<timestamp>/`); bumped multer to
+  patch a DoS advisory (GHSA-72gw-mp4g-v24j).
 
 **All phases complete.** ✅
 

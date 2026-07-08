@@ -356,7 +356,7 @@
             <div class="who">${esc(c.username)}<span class="when">${timeAgo(c.created_at)}</span></div>
             <div class="text">${esc(c.text)}</div>
           </div>
-          ${ME && ME.id === c.user_id
+          ${ME && (ME.id === c.user_id || video.is_owner)
             ? `<button class="danger" onclick="deleteComment(${c.id})">Delete</button>` : ''}
         </div>
       `).join('') || '<div style="color:var(--text-dim)">No comments yet.</div>';

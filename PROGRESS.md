@@ -75,6 +75,21 @@ incrementally to `claude/video-hosting-site-32royz`.
   home shelf + sidebar; prePlay loopback guard; admin stop-stream; suspend
   cuts broadcasts; chatLimiter 20/min.
 
+- [x] **Phase 11 — Preference-based recommendations.** recommend.js: two-stage
+  recommender (candidates from subscriptions / tag + category affinity /
+  item-item co-engagement CF / trending+fresh → weighted scoring against a
+  14-day-half-life profile of watches/likes/dislikes/saves → greedy diversity
+  re-rank with channel caps + seeded exploration slots at 6/13/20); hourly
+  in-process similarity rebuild (cosine over strong co-engagements + tag/
+  category boost, top-20 neighbors, watermark-skipped) that also prunes 30-day
+  impressions; related rail = CF + shared tags + same-channel; impressions
+  (IntersectionObserver batches → /api/impressions, sendBeacon on exit) demote
+  repeatedly-seen videos; "Not interested" card control + endpoints; schema:
+  impressions/not_interested/video_similarity tables + likes.created_at;
+  `npm run rebuild-similarity` / `seed-recs` (4 planted taste clusters) /
+  `eval-recs` (leave-last-out harness gating recall/coverage/diversity/
+  exclusions vs the old naive ranker).
+
 **All phases complete.** ✅
 
 ## Resume notes for the next session

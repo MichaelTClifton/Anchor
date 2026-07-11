@@ -31,8 +31,13 @@ comments — all backed by a single Node.js server and a SQLite database.
   keyboard shortcuts (`space`/`k`, `j`/`l`, arrows, `m`, `f`, `0`–`9`, `<`/`>`)
 - **Search** — full-text search with SQLite FTS5 (BM25 relevance, prefix matching)
   and search-as-you-type autocomplete
-- **Recommendations** — tag-based related videos, a personalized home feed
-  (subscriptions + watch-history affinity), and a time-decayed Trending feed
+- **Recommendations** — a preference-based home feed built from time-decayed
+  watch/like/save signals: item-item collaborative filtering ("viewers of this
+  also watched", rebuilt hourly), tag/category/channel affinity, subscription
+  and freshness boosts, impression-aware demotion of videos you keep scrolling
+  past, a per-page diversity re-rank with exploration slots, and a
+  "Not interested" control; the watch-page rail blends co-watch similarity
+  with shared tags, and a time-decayed Trending feed covers cold start
 - **Engagement** — likes/dislikes, comments, subscriptions, Watch Later, and a
   watch history with a "continue watching" shelf
 - **Navigation** — left sidebar (Home, Trending, Subscriptions, History, Liked,
@@ -90,6 +95,27 @@ RTMP is raw TCP on port 1935 (`RTMP_PORT` to change): it must be
 port-forwarded directly alongside 80/443 — it cannot ride the HTTP reverse
 proxy. Admins can stop any live stream from its watch page; suspending a user
 also cuts their broadcast.
+
+### Recommendations
+
+The home feed is personalized per viewer in two stages: candidates come from
+subscriptions, tag/category affinity, item-item collaborative filtering and
+trending/fresh exploration; they're then scored against a time-decayed profile
+of the viewer's watches, likes, dislikes and saves, demoted for repeat
+impressions, and re-ranked for channel/category diversity. Everything runs
+in-process against SQLite — no ML services. The co-engagement similarity table
+rebuilds automatically (~30s after boot, then hourly); force it with
+`npm run rebuild-similarity`.
+
+Dislikes and "Not interested" (the × on home-feed cards) permanently remove a
+video from your recommendations; completed videos and your own uploads never
+come back either. New accounts with no history get a trending/fresh blend.
+
+For development, `npm run seed-recs` plants a deterministic synthetic dataset
+(4 taste clusters of creators, videos and viewers; `--clean` removes it) and
+`npm run eval-recs` replays leave-last-out holdouts against both the new
+recommender and the old naive ranker, failing if recall, coverage, diversity
+or hard-exclusion guarantees regress.
 
 ### Moderation
 

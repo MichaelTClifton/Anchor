@@ -35,13 +35,17 @@ const engagementRows = db.prepare(`
   WHERE value = 1 AND created_at IS NOT NULL
 `).all();
 
-// Per user, dedupe by video keeping the latest timestamp (a like shortly after
-// a watch of the same video is one taste signal, not two holdout candidates).
-const byUser = new Map(); // user_id -> Map(video_id -> ts)
+// Per user, dedupe by video keeping the EARLIEST timestamp — the moment they
+// first strongly engaged. The holdout must be scored as of just before that
+// first touch: rewinding to just before a *later* event on the same video
+// (e.g. a like an hour after the watch) leaves the earlier watch in the
+// replayed world, and the new recommender then rightly excludes/demotes an
+// already-watched video — corrupting the prediction task rather than testing it.
+const byUser = new Map(); // user_id -> Map(video_id -> first strong ts)
 for (const r of engagementRows) {
   let m = byUser.get(r.user_id);
   if (!m) byUser.set(r.user_id, (m = new Map()));
-  if (!m.has(r.video_id) || m.get(r.video_id) < r.ts) m.set(r.video_id, r.ts);
+  if (!m.has(r.video_id) || m.get(r.video_id) > r.ts) m.set(r.video_id, r.ts);
 }
 
 // ---------- leakage-free similarity ----------
@@ -153,8 +157,9 @@ let evaluated = 0;
 
 for (const [userId, videoTs] of byUser) {
   if (videoTs.size < 3) continue;
-  // Holdout = the most recent strong engagement (ties broken by video id so
-  // the replay is deterministic).
+  // Holdout = the video most recently touched for the FIRST time (ties broken
+  // by video id so the replay is deterministic); asOf rewinds to just before
+  // that first touch, when the video was genuinely unseen.
   let holdoutId = null, tH = -Infinity;
   for (const [vid, ts] of videoTs) {
     if (ts > tH || (ts === tH && vid > holdoutId)) { holdoutId = vid; tH = ts; }

@@ -145,6 +145,40 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_streams_live ON streams(live, started_at DESC);
   CREATE INDEX IF NOT EXISTS idx_streams_user ON streams(user_id);
 
+  -- Feed impressions: ONE counter row per (user, video, surface), upserted on
+  -- each sighting. The recommender demotes videos a user keeps scrolling past;
+  -- the similarity job prunes rows whose last_at is older than 30 days.
+  CREATE TABLE IF NOT EXISTS impressions (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    surface TEXT NOT NULL DEFAULT 'home' CHECK (surface IN ('home', 'related')),
+    count INTEGER NOT NULL DEFAULT 1,
+    first_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (user_id, video_id, surface)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_impressions_last ON impressions(last_at);
+
+  -- "Not interested" is an explicit, permanent signal (unlike impressions,
+  -- which are bulky and prunable) — kept as its own tiny table on purpose.
+  CREATE TABLE IF NOT EXISTS not_interested (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (user_id, video_id)
+  );
+
+  -- Item-item co-engagement similarity ("viewers of X also watched Y"),
+  -- rebuilt hourly by recommend.js. Symmetric: both (a,b) and (b,a) rows are
+  -- stored so the PK serves lookups from either side. Top ~20 per video.
+  CREATE TABLE IF NOT EXISTS video_similarity (
+    video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    other_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    score REAL NOT NULL,
+    PRIMARY KEY (video_id, other_id)
+  );
+
   CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE
@@ -220,6 +254,15 @@ if (!userColumns.some(c => c.name === 'stream_key')) {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stream_key ON users(stream_key) WHERE stream_key IS NOT NULL');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id)');
+
+// Recommendation signals decay by age, so likes need a timestamp. Nullable:
+// SQLite can't ALTER-ADD a column with a non-constant default, and rows that
+// predate this migration have no known time (the recommender treats NULL as
+// half-decayed). The like upsert in server.js stamps it going forward.
+const likeColumns = db.prepare('PRAGMA table_info(likes)').all();
+if (!likeColumns.some(c => c.name === 'created_at')) {
+  db.exec('ALTER TABLE likes ADD COLUMN created_at INTEGER');
+}
 
 // Rebuild a single video's FTS row from the source tables. The only writer of
 // videos_fts inserts; every mutation (upload, edit, tag change) routes here.

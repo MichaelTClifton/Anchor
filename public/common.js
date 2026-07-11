@@ -137,11 +137,62 @@ function skeletonGrid(n = 8) {
 
 // ---------- paginated feed with infinite scroll ----------
 // fetchPage(cursor) must resolve to { videos, nextCursor }. Renders into #grid.
-async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = videoCard } = {}) {
+// surface ('home' | null) turns on impression logging for signed-in viewers.
+async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = null, surface = null } = {}) {
   const grid = document.getElementById('grid');
   if (!grid) return;
+  if (!card) card = surface === 'home' ? v => videoCard(v, { ni: true }) : videoCard;
   grid.innerHTML = skeletonGrid(8);
   let cursor = null, started = false, busy = false, done = false;
+
+  // Impression logging: observe each card once; when it becomes at least half
+  // visible its id joins a pending batch. Batches flush at 20 ids / every 5s /
+  // on page exit, and losses are fine — never toast, never send when signed
+  // out (ME is checked at flush time since auth may resolve after mount).
+  let observeNew = () => {};
+  if (surface) {
+    const pending = new Set();
+    const observed = new WeakSet();
+    const take = () => {
+      const ids = [...pending].slice(0, 50);
+      for (const id of ids) pending.delete(id);
+      return ids;
+    };
+    const flush = () => {
+      if (!ME || !pending.size) return;
+      fetch('/api/impressions', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ surface, video_ids: take() }),
+      }).catch(() => {});
+    };
+    const beaconFlush = () => {
+      if (!ME) return;
+      while (pending.size) {
+        navigator.sendBeacon('/api/impressions',
+          new Blob([JSON.stringify({ surface, video_ids: take() })], { type: 'application/json' }));
+      }
+    };
+    const impObserver = new IntersectionObserver(entries => {
+      for (const en of entries) {
+        if (!en.isIntersecting) continue;
+        impObserver.unobserve(en.target);
+        pending.add(en.target.dataset.id);
+      }
+      if (pending.size >= 20) flush();
+    }, { threshold: 0.5 });
+    observeNew = () => {
+      for (const el of grid.children) {
+        if (el.dataset.id && !observed.has(el)) { observed.add(el); impObserver.observe(el); }
+      }
+    };
+    setInterval(flush, 5000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') beaconFlush();
+    });
+    window.addEventListener('pagehide', beaconFlush);
+  }
 
   async function fetchInto() {
     busy = true;
@@ -157,6 +208,7 @@ async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = vid
     const vids = data.videos || [];
     if (!started) { grid.innerHTML = ''; started = true; }
     grid.insertAdjacentHTML('beforeend', vids.map(card).join(''));
+    observeNew();
     cursor = data.nextCursor || null;
     if (!cursor) done = true;
     if (!grid.children.length) grid.innerHTML = `<div class="empty">${esc(emptyMsg)}</div>`;
@@ -178,7 +230,7 @@ async function mountFeed(fetchPage, { emptyMsg = 'Nothing here yet.', card = vid
   io.observe(sentinel);
 }
 
-function videoCard(v, { side = false, remove = null } = {}) {
+function videoCard(v, { side = false, remove = null, ni = false } = {}) {
   const thumb = v.thumbnail
     ? `<img src="/thumbs/${esc(v.thumbnail)}" alt="" loading="lazy">`
     : icon('anchor', 'ph');
@@ -195,9 +247,12 @@ function videoCard(v, { side = false, remove = null } = {}) {
   const rm = remove
     ? `<button class="thumb-btn card-x" title="Remove" aria-label="Remove"
         onclick="removeFromFeed(event,'${remove}','${esc(v.id)}')">${icon('x')}</button>` : '';
+  const nib = (ni && ME && !remove)
+    ? `<button class="thumb-btn ni-btn" title="Not interested" aria-label="Not interested"
+        onclick="notInterested(event,'${esc(v.id)}')">${icon('x')}</button>` : '';
   const meta = `${formatViews(v.views)} views &middot; ${timeAgo(v.created_at)}`;
   if (side) {
-    return `<a class="side-card" href="${href}">
+    return `<a class="side-card" href="${href}" data-id="${esc(v.id)}">
       <div class="thumb">${thumb}${duration}${resume}</div>
       <div>
         <div class="title">${esc(v.title)}</div>
@@ -205,8 +260,8 @@ function videoCard(v, { side = false, remove = null } = {}) {
       </div>
     </a>`;
   }
-  return `<a class="card" href="${href}">
-    <div class="thumb">${thumb}${duration}${resume}${wl}${rm}</div>
+  return `<a class="card" href="${href}" data-id="${esc(v.id)}">
+    <div class="thumb">${thumb}${duration}${resume}${wl}${nib}${rm}</div>
     <div class="info">
       <div class="title">${esc(v.title)}</div>
       <div class="meta">${esc(v.channel_name)} &middot; ${meta}</div>
@@ -247,6 +302,18 @@ async function toggleWatchLater(e, id) {
   try {
     const r = await api('/api/watch-later', { method: 'POST', json: { video_id: id } });
     toast(r.in_watch_later ? 'Saved to Watch Later' : 'Removed from Watch Later');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Tell the recommender to show fewer videos like this one (card overlay button).
+async function notInterested(e, id) {
+  e.preventDefault(); e.stopPropagation();
+  if (!ME) return openAuthModal('login');
+  try {
+    await api(`/api/videos/${encodeURIComponent(id)}/not-interested`, { method: 'POST' });
+    const card = e.target.closest('.card');
+    if (card) card.remove();
+    toast('Got it — fewer videos like this.');
   } catch (err) { toast(err.message, 'error'); }
 }
 

@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const { db, UPLOADS_DIR, THUMBS_DIR, LIVE_DIR, reindexVideo } = require('./db');
 const transcode = require('./transcode');
 const live = require('./live');
+const recommend = require('./recommend');
 const authlib = require('./auth');
 
 const CATEGORIES = ['Music', 'Gaming', 'Education', 'Tech', 'Vlog', 'News', 'Sports', 'Other'];
@@ -89,6 +90,11 @@ const reportLimiter = rateLimit({
 });
 const chatLimiter = rateLimit({
   windowMs: 60 * 1000, limit: 20,
+  standardHeaders: true, legacyHeaders: false, message: slowDown,
+});
+// Generous: the home grid beacons batches of card sightings as you scroll.
+const impressionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 120,
   standardHeaders: true, legacyHeaders: false, message: slowDown,
 });
 
@@ -591,30 +597,6 @@ function tagsForVideo(videoId) {
     WHERE vt.video_id = ? ORDER BY t.name`).all(videoId).map(r => r.name);
 }
 
-// Tag-based related videos, topped up to 12 with popular videos as a fallback.
-// Shorts are excluded so the watch sidebar / autoplay queue stays long-form.
-function relatedVideos(videoId) {
-  const out = db.prepare(`SELECT ${VIDEO_COLS}, COUNT(vt2.tag_id) AS shared
-    FROM video_tags vt1
-    JOIN video_tags vt2 ON vt2.tag_id = vt1.tag_id AND vt2.video_id <> vt1.video_id
-    JOIN videos v ON v.id = vt2.video_id
-    JOIN users u ON u.id = v.user_id
-    WHERE vt1.video_id = ? AND v.is_short = 0 AND v.hidden = 0
-    GROUP BY v.id
-    ORDER BY shared DESC, v.views DESC, v.created_at DESC
-    LIMIT 12`).all(videoId);
-  if (out.length < 12) {
-    const have = new Set([videoId, ...out.map(v => v.id)]);
-    const fillers = db.prepare(`${VIDEO_SELECT} WHERE v.id <> ? AND v.is_short = 0 AND v.hidden = 0
-      ORDER BY v.views DESC, v.created_at DESC LIMIT 40`).all(videoId);
-    for (const f of fillers) {
-      if (out.length >= 12) break;
-      if (!have.has(f.id)) { have.add(f.id); out.push(f); }
-    }
-  }
-  return out;
-}
-
 app.get('/api/videos', requireAuth, (req, res) => {
   const q = String(req.query.q || '').trim();
   const channel = parseInt(req.query.channel, 10);
@@ -639,40 +621,9 @@ app.get('/api/videos', requireAuth, (req, res) => {
   // show up in search, channel pages and the user's own lists).
   if (category) return res.json(chronoFeed('v.category = ? AND v.is_short = 0', [category], cursor, limit));
   if (Number.isInteger(channel)) return res.json(chronoFeed('v.user_id = ?', [channel], cursor, limit));
-  const me = getUser(req);
-  if (me) return res.json(personalizedHome(me, cursor, limit));
-  res.json(chronoFeed('v.is_short = 0', [], cursor, limit));
+  // The signed-in home feed is the preference-based recommender (recommend.js).
+  res.json(recommend.personalizedHome(req.user, cursor, limit));
 });
-
-// Blend recency with subscription and tag-affinity boosts over a recent window;
-// offset-paginated so the ranking stays stable across pages.
-function personalizedHome(me, cursor, limit) {
-  const offset = cursor && Number.isInteger(cursor.o) ? cursor.o : 0;
-  const subs = new Set(db.prepare('SELECT channel_id FROM subscriptions WHERE subscriber_id = ?')
-    .all(me.id).map(r => r.channel_id));
-  const tagWeight = new Map(db.prepare(`SELECT vt.tag_id, COUNT(*) AS c FROM watch_history h
-    JOIN video_tags vt ON vt.video_id = h.video_id WHERE h.user_id = ? GROUP BY vt.tag_id`)
-    .all(me.id).map(r => [r.tag_id, r.c]));
-  const finished = new Set(db.prepare('SELECT video_id FROM watch_history WHERE user_id = ? AND completed = 1')
-    .all(me.id).map(r => r.video_id));
-  const tagsOf = db.prepare('SELECT tag_id FROM video_tags WHERE video_id = ?');
-  const rows = db.prepare(`${VIDEO_SELECT} WHERE v.is_short = 0 AND v.hidden = 0 ORDER BY v.created_at DESC LIMIT 300`).all();
-  const now = Math.floor(Date.now() / 1000);
-  for (const r of rows) {
-    let score = 1 / ((now - r.created_at) / 86400 + 2);
-    if (subs.has(r.channel_id)) score += 3;
-    if (tagWeight.size) {
-      for (const { tag_id } of tagsOf.all(r.id)) {
-        if (tagWeight.has(tag_id)) score += Math.min(2, tagWeight.get(tag_id));
-      }
-    }
-    if (finished.has(r.id)) score -= 1;
-    r._score = score;
-  }
-  rows.sort((a, b) => b._score - a._score || b.created_at - a.created_at);
-  const page = rows.slice(offset, offset + limit).map(({ _score, ...v }) => v);
-  return { videos: page, nextCursor: offset + limit < rows.length ? encodeCursor({ o: offset + limit }) : null };
-}
 
 // Search-as-you-type suggestions (de-duplicated titles, most relevant first).
 app.get('/api/search/suggest', requireAuth, (req, res) => {
@@ -741,7 +692,7 @@ app.get('/api/videos/:id', requireAuth, (req, res) => {
 
   video.tags = tagsForVideo(video.id);
   video.renditions = getRenditions(video.id);
-  video.related = relatedVideos(video.id);
+  video.related = recommend.relatedVideos(video.id, me);
   res.json(video);
 });
 
@@ -798,9 +749,12 @@ app.post('/api/videos/:id/like', requireAuth, (req, res) => {
   if (value === 0) {
     db.prepare('DELETE FROM likes WHERE user_id = ? AND video_id = ?').run(req.user.id, video.id);
   } else {
+    // created_at feeds the recommender's time decay; re-stamped on conflict
+    // because flipping like<->dislike is a fresh signal.
     db.prepare(`
-      INSERT INTO likes (user_id, video_id, value) VALUES (?, ?, ?)
-      ON CONFLICT (user_id, video_id) DO UPDATE SET value = excluded.value
+      INSERT INTO likes (user_id, video_id, value, created_at) VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT (user_id, video_id) DO UPDATE SET
+        value = excluded.value, created_at = excluded.created_at
     `).run(req.user.id, video.id, value);
   }
   const counts = db.prepare(`
@@ -965,6 +919,36 @@ app.get('/api/watch-later', requireAuth, (req, res) => {
     FROM watch_later w JOIN videos v ON v.id = w.video_id JOIN users u ON u.id = v.user_id
     WHERE ${clauses.join(' AND ')} ORDER BY w.created_at DESC, v.id DESC LIMIT ?`).all(...args);
   res.json(pageResult(rows, limit, last => ({ t: last.saved_at, id: last.id })));
+});
+
+// ---------- feed feedback (impressions & not-interested) ----------
+
+// Batched card-sighting counters from the home grid (fetch keepalive or
+// sendBeacon — express.json parses both). The recommender demotes videos a
+// viewer keeps scrolling past. Unknown ids are silently dropped.
+app.post('/api/impressions', impressionLimiter, requireAuth, (req, res) => {
+  const surface = String(req.body.surface || '');
+  if (!['home', 'related'].includes(surface)) {
+    return res.status(400).json({ error: 'Unknown surface.' });
+  }
+  const ids = Array.isArray(req.body.video_ids) ? req.body.video_ids : [];
+  const recorded = recommend.recordImpressions(req.user.id, surface,
+    ids.slice(0, 50).map(String));
+  res.json({ ok: true, recorded });
+});
+
+// An explicit "don't recommend this" — permanently hides the video from the
+// viewer's home feed and related rail (DELETE undoes it).
+app.post('/api/videos/:id/not-interested', requireAuth, (req, res) => {
+  if (!recommend.setNotInterested(req.user.id, req.params.id)) {
+    return res.status(404).json({ error: 'Video not found.' });
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/videos/:id/not-interested', requireAuth, (req, res) => {
+  recommend.clearNotInterested(req.user.id, req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- liked & subscription feeds ----------
@@ -1284,6 +1268,7 @@ app.use((err, req, res, next) => {
 });
 
 live.init();
+recommend.startSimilarityJob();
 
 app.listen(PORT, () => {
   console.log(`⚓ Anchor is running at http://localhost:${PORT}`);

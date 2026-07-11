@@ -428,6 +428,9 @@ main { flex: 1; min-width: 0; padding: 24px; }
 .card:hover .thumb-btn { display: inline-flex; }
 .thumb-btn:hover { background: #000; color: var(--accent); border-color: var(--accent); }
 .card-x { font-size: 18px; }
+/* Not-interested stacks directly under the Watch Later button (same 32px box);
+   the button above supplies the dividing border. */
+.ni-btn { top: 32px; }
 
 /* horizontal shelf (continue watching / shorts) */
 .row {

@@ -7,6 +7,9 @@
     "start": "node server.js",
     "backup": "node scripts/backup.js",
     "make-admin": "node scripts/make-admin.js",
+    "rebuild-similarity": "node scripts/rebuild-similarity.js",
+    "seed-recs": "node scripts/seed-recs.js",
+    "eval-recs": "node scripts/eval-recs.js",
     "vendor": "node -e \"require('fs').copyFileSync('node_modules/hls.js/dist/hls.light.min.js','public/vendor/hls.light.min.js')\""
   },
   "license": "MIT",

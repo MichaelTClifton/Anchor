@@ -64,7 +64,8 @@
       if (cursor) params.set('cursor', cursor);
       const qs = params.toString();
       return api('/api/videos' + (qs ? `?${qs}` : ''));
-    }, { emptyMsg: q ? 'No videos matched your search.' : 'No videos yet. Be the first to upload one!' });
+    }, { emptyMsg: q ? 'No videos matched your search.' : 'No videos yet. Be the first to upload one!',
+         surface: q ? null : 'home' });
   </script>
 </body>
 </html>
